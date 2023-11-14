@@ -322,7 +322,7 @@ create_multiple_models(
   train_data = data_filtered,
   test_data = test_data_prepared,
   target = my_target,
-  n_max = 3,
+  n_max = 2,
   trim_models = TRUE,
   trim_metric = "train_mcc",
   trim_threshold = 0.3,
