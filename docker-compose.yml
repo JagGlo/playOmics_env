@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  playomics_env:
+    image: jagglo/playomics_env:1.0.0
+    container_name: playomics_env
+    environment:
+      - USER=rstudio
+      - PASSWORD=rstudio
+    ports:
+      - "8888:8787"
+    volumes:
+      - .:/home/rstudio
+      - playomics_data:/home/rstudio/TCGA-BRCA
+    command: ["/init"]
+
+  playomics_env_data:
+    image: jagglo/playomics_env_data:latest
+    volumes:
+      - playomics_data:/volume-data
+
+volumes:
+  playomics_data:
