@@ -245,6 +245,7 @@ We will treat the `splitted_data$train_data` as a background for the modeling ex
 
 ```{r}
 modelling_set <- splitted_data$train_data
+rm(splitted_data)
 ```
 
 As a preparation for the modeling process, we will use again the function **split_data_into_train_test()**:
@@ -268,6 +269,7 @@ Also, a test set needs to be prepared so the models can be validated on correspo
 ```{r warning=FALSE}
 test_data_prepared <-
   prepare_data_for_modelling(BRCA_data_splitted$test_data, target = my_target)
+rm(BRCA_data_splitted)
 ```
 
 ### Selecting features
@@ -297,6 +299,7 @@ data_filtered <-
     n_fold = 5,
     n_threads = 5
   )
+rm(data_prepared)
 ```
 
 This approach ensures you're working with the most relevant features, optimizing the model's performance and efficiency.
@@ -322,7 +325,7 @@ create_multiple_models(
   train_data = data_filtered,
   test_data = test_data_prepared,
   target = my_target,
-  n_max = 2,
+  n_max = 3,
   trim_models = TRUE,
   trim_metric = "train_mcc",
   trim_threshold = 0.3,
