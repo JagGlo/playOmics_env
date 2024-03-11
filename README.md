@@ -39,12 +39,32 @@ Once the container is running, RStudio Server can be accessed through your web b
 - Open your web browser and navigate to `http://localhost:8888`.
 - Log in using the RStudio credentials provided in the Docker Compose configuration (default: username `rstudio` and password `rstudio`).
 
-### 4. Running the Test Script
+### 4. Running Tests and Analysis
 
-In RStudio, you can run the provided R Markdown file named `playOmics-example.Rmd` script to test the environment. Follow these steps:
+To verify the setup and functionality of the environment, you have two options in RStudio: running a test script through an R Markdown file or executing an analysis script. Follow the steps below for each method:
 
-1. Open the `playOmics-example.Rmd` script located in the project directory.
-2. Run the script to ensure that the environment is correctly set up and functioning.
+**Running the Test Script:**
+
+1. Open the R Markdown file named `playOmics-example.Rmd`, located in the project directory.
+2. Run the script by knitting the document to ensure that the environment is correctly set up and functioning.
+
+**Executing the Analysis Script:**
+
+1. Locate the `run_experiment.R` script within the project directory.
+2. Source the script in RStudio using the command `source("run_experiment.R")` to run the analysis.
+
+These steps allow you to test the environment with an example workflow and execute a more comprehensive analysis, ensuring the playOmics setup meets your needs.
+
+### 5. Comparing playOmics with Other Algorithms
+
+To facilitate a comprehensive comparison of playOmics against other algorithms, with results that are showcased within our publication, a dedicated script is available. Follow the instructions below to access and utilize this comparison script:
+
+1. Navigate to the `comparison` folder located within the project directory.
+2. Here, you will find the script named `comparison_with_other_algos.Rmd`.
+3. Open this R Markdown file in RStudio.
+4. Knit the document to execute the comparisons as presented in the publication.
+
+This script provides a detailed analysis and comparison, allowing you to see how playOmics performs relative to other algorithms in the field.
 
 ## Troubleshooting
 
