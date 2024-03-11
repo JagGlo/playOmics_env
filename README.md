@@ -1,6 +1,6 @@
 # playOmics Environment
 
-This repository contains the necessary setup for running the (playOmics)[https://github.com/JagGlo/playOmics] environment using Docker, including an Rmd script for testing purposes. It leverages Docker Compose for easy setup and execution.
+This repository contains the necessary setup for running the [playOmics](https://github.com/JagGlo/playOmics) environment using Docker, including an Rmd script for testing purposes. It leverages Docker Compose for easy setup and execution.
 
 ## Prerequisites
 
