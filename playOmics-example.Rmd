@@ -74,7 +74,7 @@ As you move forward, you will integrate various omics datasets into your experim
 Omics datasets that will be incorporated in the experiment:
 
 -   clinical data (20 features),
--   proteome (9734 features),
+-   proteome (213 features),
 -   methylation (20107 features),
 -   miRNA (824 features),
 -   mutation (7967 features),
@@ -83,7 +83,7 @@ Omics datasets that will be incorporated in the experiment:
 
 ```{r}
 proteome <-
-  read_delim("TCGA-BRCA/Human__TCGA_BRCA__BI__Proteome__QExact__01_28_2016__BI__Gene__CDAP_iTRAQ_UnsharedLogRatio_r2.cct", na = c("NA", "NA,NA"), show_col_types = F) %>%
+   read_delim("TCGA-BRCA/Human__TCGA_BRCA__MDA__RPPA__MDA_RPPA__01_28_2016__BI__Gene__Firehose_RPPA.cct", na = c("NA", "NA,NA"), show_col_types = F) %>%
   data.table::transpose(keep.names = "ID", make.names = "attrib_name") %>%
   mutate_at(vars(-ID), as.numeric)
 
@@ -261,14 +261,14 @@ In the next step, you can continue the preparation of data for modeling using **
 
 ```{r warning=FALSE}
 data_prepared <-
-  prepare_data_for_modelling(data = BRCA_data_splitted$train_data, target = my_target)
+  prepare_data_for_modelling(data = BRCA_data_splitted$train_data, target = my_target, remove_correlated_features = F)
 ```
 
 Also, a test set needs to be prepared so the models can be validated on corresponding data:
 
 ```{r warning=FALSE}
 test_data_prepared <-
-  prepare_data_for_modelling(BRCA_data_splitted$test_data, target = my_target)
+  prepare_data_for_modelling(BRCA_data_splitted$test_data, target = my_target, remove_correlated_features = F)
 rm(BRCA_data_splitted)
 ```
 
@@ -286,7 +286,7 @@ Variables might be selected in three ways:
 -   by selecting % of variables from each dataset,
 -   or by defining a cut-off threshold for a selected metric.
 
-What's important, at this level, we are still operating on each dataset separately, which allows us to preserve an equal number of slots for all data frames.
+What's important, at this level, we are still operating on each dataset separately, which allows us to preserve an equal number of slots for all data frames. This approach ensures you’re working with the most relevant features, optimizing the model's performance and efficiency.
 
 ```{r}
 data_filtered <-
@@ -295,14 +295,34 @@ data_filtered <-
     target = my_target,
     filter_name = "auc",
     cutoff_method = "top_n",
-    cutoff_treshold = 3,
+    cutoff_treshold = 5,
+    return_ranking_list = FALSE,
     n_fold = 5,
     n_threads = 5
   )
 rm(data_prepared)
 ```
 
-This approach ensures you're working with the most relevant features, optimizing the model's performance and efficiency.
+If the parameter "return_ranking_list" is set to TRUE, the function will return a list containing the filtered datasets and the ranking list. If you wish to obtain a ranking among all features (global ranking), you can use it like this:
+
+```{r}
+all_data_rank <-  
+  lapply(data_filtered, function(x) x$ranking_list) %>% 
+  bind_rows() %>%
+  arrange(desc(mean_score)) %>%
+  top_n(5, mean_score) # to select 5 features among all datasets
+
+train_data_top_5 <-
+    data_prepared %>%
+    reduce(full_join, by = c(my_target$id_variable)) %>%
+    select(-my_target$id_variable, -my_target$target_variable, everything()) %>%
+    select(my_target$id_variable, my_target$target_variable, all_data_rank$original_name)
+
+test_data_top_5 <- 
+   test_data_prepared %>%
+    reduce(full_join, by = c(my_target$id_variable)) %>%
+    select(names(train_data_top_5)) # to select the same variables as in train data
+```
 
 ### Modelling
 
@@ -310,7 +330,7 @@ The **create_multiple_models()** function is a comprehensive tool to build multi
 
 By default, the function examines combinations of predictor variables up to a set of three. Still, if you're feeling adventurous, you can instruct it to consider more combinations by adjusting the `n_max` parameter.
 
-The logistic regression algorithm is at the heart of the function---a well-established method for predicting binary outcomes. The choice of logistic regression ensures that the models produced are both interpretable and reliable, making them an excellent fit for a wide range of practical applications.
+The logistic regression algorithm is at the heart of the function—a well-established method for predicting binary outcomes. The choice of logistic regression ensures that the models produced are both interpretable and reliable, making them an excellent fit for a wide range of practical applications. 
 
 You then feed in your training and testing data using the `train_data` and `test_data` parameters, respectively. Additionally, the function needs clarity about which column in your data is the `target` (or dependent) variable and which serves as an identifier. This is essential for the function to focus on the modeling process properly.
 
@@ -325,7 +345,7 @@ create_multiple_models(
   train_data = data_filtered,
   test_data = test_data_prepared,
   target = my_target,
-  n_max = 3,
+  n_max = 5,
   trim_models = TRUE,
   trim_metric = "train_mcc",
   trim_threshold = 0.3,
@@ -336,7 +356,7 @@ create_multiple_models(
   log_experiment = TRUE,
   explain = TRUE,
   # configuration
-  n_cores = 4,
+  n_cores = 5,
   directory = here::here()
 )
 ```
@@ -401,6 +421,15 @@ Each model and its associated details are logged within the **create_multiple_mo
 The overall models' results can be easily collected by using **read_model_data()** function. The additional parameter `directory` might be passed if the directory differs from the working directory.
 
 ```{r warning=FALSE}
+results <- read_model_data(
+  experiment_name = my_experiment_name,
+  directory = here::here()
+)
+```
+
+If, at any point in the analysis, something goes wrong and you do not obtain the complete results, or if you wish to examine the detailed model logs, you can use read_logged_data() to obtain one of the following: "metrics," "model_logs," "model_coef" or "params."
+
+``` r
 results <- read_logged_data(
   experiment_name = my_experiment_name,
   file_type = "metrics",
