@@ -1,0 +1,769 @@
+---
+title: "Comparison with other tools"
+output: html_notebook
+---
+
+```{r setup}
+# load playOmics
+library(playOmics)
+```
+
+```{r}
+# Load the additional required libraries
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+here::set_here()
+```
+
+## Connecting dataset
+
+
+```{r}
+#adjust limited data to playOmics structure
+data <- readr::read_csv("brca_data_w_meta.csv")
+
+data <- data %>%
+  rownames_to_column("id") %>% 
+  gather(key, value, -id) %>% 
+   mutate(dataset = str_extract(key, "^\\w+(?=_)"),
+         dataset = if_else(is.na(dataset), "clinical", dataset)) %>% 
+  split(., .$dataset)
+  
+BRCA_data <- 
+  sapply(names(data), function(name){
+  data[[name]] <-
+    data[[name]] %>%
+    select(-dataset) %>%
+    spread(key, value)
+    if(name != "clinical"){
+      data[[name]] <- data[[name]] %>% 
+        mutate_all(as.numeric) %>% 
+        mutate(id = as.character(id))
+    } else {
+       data[[name]] 
+    }
+    
+}, USE.NAMES = TRUE)
+
+#rename target
+BRCA_data$clinical <-
+  BRCA_data$clinical %>% 
+  rename("subtype"= "patient.clinical.cqcf.histological.type") %>% 
+  select(-vital.status) %>% 
+  mutate(subtype = if_else(subtype == "infiltrating ductal carcinoma", "ductal", "lobular"))
+
+BRCA_data %>% summary()
+```
+
+```{r}
+plot_coverage(BRCA_data)
+```
+
+## Classification
+
+### Define analysis target
+
+```{r}
+my_target <-
+  define_target(
+    phenotype_df_name = "clinical",
+    id_variable_name = "id",
+    target_variable_name = "subtype",
+    positive_class_name = "ductal"
+  )
+
+my_target
+```
+
+### Dividing the Data: Train/Test Split
+
+```{r}
+BRCA_data_splitted <-
+  split_data_into_train_test(BRCA_data, prop = 8 / 10, target = my_target)
+```
+
+### Prepare dataset for modeling
+
+```{r warning=FALSE}
+data_prepared <-
+  prepare_data_for_modelling(data = BRCA_data_splitted$train_data, target = my_target, remove_correlated_features = F)
+```
+
+
+```{r warning=FALSE}
+test_data_prepared <-
+  prepare_data_for_modelling(BRCA_data_splitted$test_data, target = my_target, remove_correlated_features = F)
+```
+
+### Selecting features
+
+- performance 
+
+```{r}
+ranking_list <-
+  # new name - prepare ranking
+  nested_filtering(
+    data = data_prepared,
+    target = my_target,
+    filter_name = "mrmr",
+    cutoff_method = "top_n",
+    cutoff_treshold = 10,
+    n_fold = 5,
+    n_threads = 5
+  )
+```
+
+```{r}
+train_data_united <-
+    data_filtered %>%
+    reduce(full_join, by = c(my_target$id_variable)) %>%
+    select(-my_target$id_variable, -my_target$target_variable, everything()) 
+```
+
+```{r}
+test_data_united <- 
+   test_data_prepared %>%
+    reduce(full_join, by = c(my_target$id_variable)) %>%
+    select(names(train_data_united)) 
+```
+
+```{r}
+check_data(train_data_united)
+```
+
+```{r}
+train_data_united  %>% count(subtype)
+```
+
+# playOmics approach
+
+```{r eval=FALSE, echo = TRUE}
+models <- create_multiple_models(
+  experiment_name = "limited_data_top_10_mrmr_40ft",
+  train_data = data_filtered,
+  test_data = test_data_prepared,
+  target = my_target,
+  n_min = 2,
+  n_max = 5,
+  trim_models = TRUE,
+  trim_metric = "train_mcc",
+  trim_threshold = 0.25,
+  # single model settings
+  validation_method = "cv",
+  n_prop = NULL,
+  n_repeats = 5,
+  add_sample_weights = TRUE,
+  log_experiment = FALSE,
+  explain = FALSE,
+  # configuration
+  n_cores = 10,
+  directory = here::here()
+)
+```
+
+
+```{r}
+results <- read_model_data(
+  experiment_name = "limited_data_top_10_mrmr_40ft",
+  directory = here::here()
+) 
+ results %>% 
+   results_GUI(target = my_target)
+```
+
+```{r}
+results %>% 
+  top_n(10, train_mcc) %>% 
+  summarise(mean_mcc = mean(test_mcc))
+```
+
+```{r}
+results %>% 
+  top_n(10, train_mcc) %>% 
+  summarise(train_mcc = mean(train_mcc))
+```
+
+# Other algorithms
+
+```{r}
+library(tidymodels)
+
+custom_metrics <-
+          yardstick::metric_set(
+            yardstick::mcc,
+            yardstick::recall,
+            yardstick::precision,
+            yardstick::accuracy,
+            yardstick::roc_auc,
+            yardstick::sens,
+            yardstick::spec,
+            yardstick::ppv,
+            yardstick::npv,
+            yardstick::pr_auc,
+            yardstick::f_meas
+          )
+```
+
+# All feat
+
+## Prepare data:
+
+### unbalanced data handling - sample weights
+
+```{r}
+proportion <- floor(sum(train_data_united$subtype == "ductal") / sum(train_data_united$subtype == "lobular"))
+train_data_united_weights <-
+train_data_united %>% 
+  mutate(sample_weight = ifelse(subtype == "lobular", proportion, 1),
+         sample_weight = parsnip::importance_weights(sample_weight))
+```
+
+### data prepararion
+
+```{r}
+train_data_united_weights <- train_data_united_weights %>% select(-id)
+train_data_united_weights <- train_data_united_weights %>% mutate(subtype = as.factor(subtype))
+test_data_united <- test_data_united %>% mutate(subtype = as.factor(subtype))
+```
+
+
+```{r}
+rec <-
+    recipes::recipe(train_data_united_weights) %>%
+          recipes::update_role(my_target$target_variable, new_role = "outcome") %>%
+          recipes::update_role(recipes::has_role(NA), new_role = "predictor") %>%
+  recipes::step_normalize(all_predictors())
+```
+
+```{r}
+set.seed(2)
+train_folds <- rsample::vfold_cv(train_data_united_weights, v = 5, strata = my_target$target_variable)
+```
+
+## autoML
+
+```{r}
+library(agua)
+library(h2o)
+
+h2o_start()
+set.seed(4595)
+
+auto_spec <-
+  auto_ml() %>%
+  set_engine("h2o", max_runtime_secs = 60*5, seed = 1) %>%
+  set_mode("classification")
+
+auto_wflow <-
+  workflow() %>%
+  add_model(auto_spec) %>%
+  add_recipe(rec)
+
+auto_fit <- fit(auto_wflow, data = train_data_united_weights)
+
+# Make your own metric set
+some_metrics <- metric_set(mcc, roc_auc)
+
+all_results <- 
+  collect_metrics(auto_fit, summarize = T) %>% 
+  select(-std_err, -n) %>% 
+  pivot_wider(names_from = .metric, values_from = mean)
+
+```
+```{r}
+all_results %>% slice(1) %>% select(id, algorithm, mcc, auc)
+```
+
+
+```{r}
+library(vip)
+
+# auto_fit %>% 
+#   extract_fit_parsnip() %>% 
+#   vip(num_features = 10)
+```
+
+
+```{r}
+test_results <-
+            predict(auto_fit, new_data = test_data_united) %>%
+            bind_cols(predict(auto_fit, new_data = test_data_united, type = "prob")) %>%
+            bind_cols(test_data_united %>%
+                        select(my_target$target_variable))
+test_metrics <-
+            yardstick::mcc(test_results,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_p", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+test_metrics
+```
+
+## Lasso
+
+```{r}
+model_spec <- 
+  logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+
+wflow <-
+  workflows::workflow() %>%
+  workflows::add_model(model_spec) %>%
+  workflows::add_recipe(rec) %>% 
+  workflows::add_case_weights(sample_weight)
+
+grid <- tibble(penalty = 10^seq(-3, 0, length.out = 20))
+
+get_glmnet_coefs <- function(x) {
+  x %>% 
+    extract_fit_engine() %>% 
+    tidy(return_zeros = TRUE) %>% 
+    rename(penalty = lambda)
+}
+parsnip_ctrl <- tune::control_grid(extract = get_glmnet_coefs, save_workflow = T)
+
+set.seed(3)
+tune_lr_res <- 
+  wflow %>% 
+  tune::tune_grid(resamples = train_folds, grid = grid, control = parsnip_ctrl, metrics = yardstick::metric_set(
+            yardstick::mcc,
+            yardstick::roc_auc
+          ))
+
+autoplot(tune_lr_res)
+
+```
+
+```{r}
+highest_mcc <- tune_lr_res %>%
+  tune::select_best("mcc")
+
+final_lasso <- tune::finalize_workflow(
+  wflow,
+  highest_mcc
+) 
+
+best_lasso <- collect_metrics(tune_lr_res) %>% filter(.config == highest_mcc$.config)
+
+print(paste("Highest train MCC:", round(best_lasso$mean[best_lasso$.metric == "mcc"], 3)))
+```
+
+
+```{r}
+print(paste("Highest train ROC_AUC:", round(best_lasso$mean[best_lasso$.metric == "roc_auc"], 3)))
+```
+
+
+```{r}
+library(vip)
+
+final_lasso %>%
+  fit(train_data_united_weights) %>%
+  workflows::pull_workflow_fit() %>%
+  vi(lambda = highest_mcc$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>% 
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r}
+fitted_lasso <- fit_best(tune_lr_res, verbose = TRUE)
+
+test_results <-
+            predict(fitted_lasso, new_data = test_data_united) %>%
+            bind_cols(predict(fitted_lasso, new_data = test_data_united, type = "prob")) %>%
+            bind_cols(test_data_united %>%
+                        select(my_target$target_variable))
+
+test_metrics <-
+            yardstick::mcc(test_results,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+test_metrics
+```
+
+## Decision Tree
+
+```{r}
+tree_spec <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_grid <- grid_regular(cost_complexity(), tree_depth(), min_n(), levels = 4)
+
+doParallel::registerDoParallel()
+
+wflow <-
+  workflows::workflow() %>%
+  workflows::add_model(tree_spec) %>%
+  workflows::add_recipe(rec) %>% 
+  workflows::add_case_weights(sample_weight)
+
+ctrl <- tune::control_grid(save_workflow =  TRUE)
+
+set.seed(345)
+
+tree_rs <- 
+  wflow %>% 
+  tune_grid(
+  resamples = train_folds,
+  grid = tree_grid,
+  control = ctrl,
+  metrics = metric_set(mcc, roc_auc)
+)
+
+highest_mcc_tree <- tree_rs %>%
+  tune::select_best("mcc")
+
+best_tree <- collect_metrics(tree_rs) %>% filter(.config == highest_mcc_tree$.config)
+
+print(paste("Highest train MCC:", round(best_tree$mean[best_tree$.metric == "mcc"], 3)))
+
+print(paste("Highest train ROC_AUC:", round(best_tree$mean[best_tree$.metric == "roc_auc"], 3)))
+```
+```{r}
+final_tree <- fit_best(tree_rs)
+
+test_results <-
+            predict(final_tree, new_data = test_data_united) %>%
+            bind_cols(predict(final_tree, new_data = test_data_united, type = "prob")) %>%
+            bind_cols(test_data_united %>%
+                        select(my_target$target_variable))
+
+test_metrics <-
+            yardstick::mcc(test_results,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+test_metrics
+```
+
+
+# Top 5
+
+## Prepare data:
+
+### unbalanced data handling - sample weights
+
+```{r}
+proportion <- floor(sum(train_data_united$subtype == "ductal") / sum(train_data_united$subtype == "lobular"))
+train_data_united_weights_top5 <-
+train_data_united %>% 
+  mutate(sample_weight = ifelse(subtype == "lobular", proportion, 1),
+         sample_weight = parsnip::importance_weights(sample_weight))
+```
+
+### data prepararion
+
+```{r}
+# train_data <- train_data_united_weights_top5 %>% select(-ID) %>% na.omit()
+train_data_united_weights_top5 <- train_data_united_weights_top5 %>% select(-id)
+train_data_united_weights_top5 <- train_data_united_weights_top5 %>% mutate(subtype = as.factor(subtype))
+test_data_top_5 <- test_data_top_5 %>% mutate(subtype = as.factor(subtype))
+```
+
+
+```{r}
+rec5 <-
+    recipes::recipe(train_data_united_weights_top5) %>%
+          recipes::update_role(my_target$target_variable, new_role = "outcome") %>%
+          recipes::update_role(recipes::has_role(NA), new_role = "predictor") %>%
+  recipes::step_normalize(all_predictors())
+```
+
+
+## autoML
+
+```{r}
+library(agua)
+library(h2o)
+
+h2o_start()
+set.seed(4595)
+
+auto_spec5 <-
+  auto_ml() %>%
+  set_engine("h2o", max_runtime_secs = 60*5, seed = 1) %>%
+  set_mode("classification")
+
+auto_wflow5 <-
+  workflow() %>%
+  add_model(auto_spec5) %>%
+  add_recipe(rec5)
+
+auto_fit5 <- fit(auto_wflow5, data = train_data_united_weights_top5)
+
+extract_fit_parsnip(auto_fit5)
+
+all_results5 <- 
+  collect_metrics(auto_fit5, summarize = T) %>% 
+  select(-std_err, -n) %>% 
+  pivot_wider(names_from = .metric, values_from = mean)
+
+all_results5 %>% 
+  top_n(10, auc) %>% 
+  summarise(mean_mcc = mean(auc))
+```
+```{r}
+all_results5 %>% slice(1) %>% select(id, algorithm, mcc, auc)
+```
+
+
+```{r}
+library(vip)
+
+# auto_fit5 %>% 
+#   extract_fit_parsnip() %>% 
+#   vip()
+```
+
+
+```{r}
+test_results5 <-
+            predict(auto_fit5, new_data = test_data_top_5) %>%
+            bind_cols(predict(auto_fit5, new_data = test_data_top_5, type = "prob")) %>%
+            bind_cols(test_data_top_5 %>%
+                        select(my_target$target_variable))
+test_metrics5 <-
+            yardstick::mcc(test_results5,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results5,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_p", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+test_metrics5
+```
+
+## Lasso
+
+```{r}
+set.seed(2)
+train_folds5 <- rsample::vfold_cv(train_data_united_weights_top5, v = 5, strata = my_target$target_variable)
+
+model_spec5 <- 
+  logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+
+wflow5 <-
+  workflows::workflow() %>%
+  workflows::add_model(model_spec5) %>%
+  workflows::add_recipe(rec5) %>% 
+  workflows::add_case_weights(sample_weight)
+
+grid <- tibble(penalty = 10^seq(-3, 0, length.out = 20))
+
+get_glmnet_coefs <- function(x) {
+  x %>% 
+    extract_fit_engine() %>% 
+    broom::tidy(return_zeros = TRUE) %>% 
+    rename(penalty = lambda)
+}
+
+parsnip_ctrl <- tune::control_grid(extract = extract_fit_engine, save_workflow =  TRUE)
+
+set.seed(3)
+tune_lr_res5 <- 
+  wflow5 %>% 
+  tune::tune_grid(resamples = train_folds5, grid = grid, control = parsnip_ctrl, metrics = yardstick::metric_set(
+            yardstick::mcc,
+            yardstick::roc_auc
+          ))
+```
+
+```{r}
+highest_mcc5 <- tune_lr_res5 %>%
+  tune::select_best("mcc")
+
+final_lasso5 <- tune::finalize_workflow(
+  wflow5,
+  highest_mcc5
+) 
+
+best_lasso5 <- collect_metrics(tune_lr_res5) %>% filter(.config == highest_mcc5$.config)
+
+print(paste("Highest train MCC:", round(best_lasso5$mean[best_lasso5$.metric == "mcc"], 3)))
+
+print(paste("Highest train ROC_AUC:", round(best_lasso5$mean[best_lasso5$.metric == "roc_auc"], 3)))
+```
+
+
+```{r}
+library(vip)
+
+final_lasso5 %>%
+  fit(train_data_united_weights_top5) %>%
+  workflows::pull_workflow_fit() %>%
+  vi(lambda = highest_mcc5$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>% 
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r}
+fitted_lasso5 <- fit_best(tune_lr_res5)
+
+test_results5 <-
+            predict(fitted_lasso5, new_data = test_data_top_5) %>%
+            bind_cols(predict(fitted_lasso5, new_data = test_data_top_5, type = "prob")) %>%
+            bind_cols(test_data_top_5 %>%
+                        select(my_target$target_variable))
+
+test_metrics5 <-
+            yardstick::mcc(test_results5,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results5,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+print(test_metrics5 %>% round(3))
+```
+
+## Decision Tree
+
+```{r}
+tree_spec5 <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_grid <- grid_regular(cost_complexity(), tree_depth(), min_n(), levels = 4)
+
+doParallel::registerDoParallel()
+
+wflow5 <-
+  workflows::workflow() %>%
+  workflows::add_model(tree_spec5) %>%
+  workflows::add_recipe(rec5) %>% 
+  workflows::add_case_weights(sample_weight)
+
+ctrl <- tune::control_grid(save_workflow =  TRUE)
+
+set.seed(345)
+
+tree_rs5 <- 
+  wflow5 %>% 
+  tune_grid(
+  resamples = train_folds5,
+  grid = tree_grid,
+  control = ctrl,
+  metrics = metric_set(mcc, roc_auc)
+)
+
+highest_mcc_tree5 <- tree_rs5 %>%
+  tune::select_best("mcc")
+
+best_tree5 <- collect_metrics(tree_rs5) %>% filter(.config == highest_mcc_tree5$.config)
+
+print(paste("Highest train MCC:", round(best_tree5$mean[best_tree5$.metric == "mcc"], 3)))
+```
+
+
+```{r}
+print(paste("Highest train ROC_AUC:", round(best_tree5$mean[best_tree5$.metric == "roc_auc"], 3)))
+```
+
+```{r}
+final_tree5 <- fit_best(tree_rs5)
+
+test_results5 <-
+            predict(final_tree5, new_data = test_data_top_5) %>%
+            bind_cols(predict(final_tree5, new_data = test_data_top_5, type = "prob")) %>%
+            bind_cols(test_data_top_5 %>%
+                        select(my_target$target_variable))
+
+test_metrics5 <-
+            yardstick::mcc(test_results5,
+                           truth = !!my_target$target_variable,
+                           estimate = .pred_class,
+                           na_rm = T
+            ) %>%
+            bind_rows(
+              yardstick::roc_auc(test_results5,
+                             truth =  !!my_target$target_variable,
+                             !!paste0(".pred_", my_target$positive_class),
+                             na_rm = T
+              )
+            ) %>%
+            mutate(`.metric` = paste0("test_", `.metric`)) %>%
+            select(-`.estimator`) %>%
+            pivot_wider(names_from = `.metric`, values_from = `.estimate`)
+
+test_metrics5
+```
+
