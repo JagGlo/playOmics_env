@@ -24,7 +24,6 @@ library(playOmics)
 
 ```{r}
 # Load the additional required libraries
-library(tidyverse)
 library(readxl)
 ```
 
@@ -365,53 +364,6 @@ create_multiple_models(
 When you're running **create_multiple_models()**, you can trim away models that aren't up to the mark. By setting `trim_models` to TRUE, you're instructing the function to be watchful and eliminate models that don't meet a certain standard. This "standard" or "benchmark" is defined by you through the `trim_metric` and `trim_threshold` parameters. For instance, with the default settings, if a model's performance (measured using the Matthews Correlation Coefficient on the training data) is below 0.3, it gets deleted. This trimming process ensures you're left with the best-performing models, making your analysis more efficient and insightful, especially when handling complex datasets.
 
 Lastly, for those who value robustness in their models, the function offers an option to validate the significance of your results using permutation tests. By turning on the `validate_with_permutation` parameter and specifying the number of permutations, the function will shuffle your data to ascertain the models' significance.
-
-### Performance
-
-The **create_multiple_models()** function operates with considerable efficiency, even as it juggles multiple computations in parallel. However, it's important to note that the computational resources required might be substantial, depending on the specific experimental conditions.
-
-Two key components significantly influence the performance and computational demands of this function. The first one is `n_max`. This parameter determines the maximum number of variables considered in one model, and consequently, the higher its value, the greater the number of combinations the function needs to assess. This impacts the computational load exponentially since the function when dealing with models comprising multiple predictors, will systematically sift through all possible combinations of lesser elements before assessing more complex, multifaceted combinations.
-
-The second component is the actual number of variables selected for the experiment. The selection of variables is critical as the function generates combinations without repetition, increasing the computational demands with each added variable. This means that a thoughtful selection of variables and a calibrated setting of the `n_max` parameter are crucial to managing the function's computational intensity efficiently, allowing us to optimize the experiment's performance without compromising the accuracy and reliability of the results obtained.
-
-```{r echo=FALSE}
-# number of combinations
-no_of_combinations <- function(n_max, n_var) {
-  factorial(n_var) / (factorial(n_max) * factorial(n_var - n_max))
-}
-# no_of_combinations(2, 35)
-
-# size of combinations
-# lapply(c(35, 40), function(n_var){
-#   lapply(1:5, function(n_max) no_of_combinations(n_max, n_var)) %>% cumsum()
-# })
-
-col1 <- seq(10, 50, by = 5)
-col2 <- rep(2:5, times = length(col1))
-col1_repeated <- rep(col1, each = length(2:5))
-df <- data.frame(n_var = col1_repeated, n_max = col2)
-df %>%
-  mutate(no_of_combinations = no_of_combinations(n_max, n_var)) %>%
-  group_by(n_var) %>%
-  mutate(
-    cumulated = cumsum(no_of_combinations),
-    n_max = as_factor(n_max)
-  ) %>%
-  ggplot(aes(x = n_var, y = cumulated, color = n_max)) +
-  geom_line() +
-  scale_y_continuous(
-    trans = "log10",
-    breaks = scales::trans_breaks("log10", function(x) 10^x),
-    labels = scales::trans_format("log10", scales::math_format(10^.x))
-  ) +
-  labs(x = "no. of variables in final set", y = "cumulated no. of combinations", color = "max no. of predictors in single model") +
-  theme_classic() +
-  theme(legend.position = "top") +
-  guides(color = guide_legend(
-    title.position = "top",
-    title.hjust = 0.5
-  ))
-```
 
 ### Logging Models and Details
 
