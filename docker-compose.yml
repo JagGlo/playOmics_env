@@ -15,7 +15,7 @@ services:
     command: ["/init"]
 
   playomics_env_data:
-    image: jagglo/playomics_env_data:latest
+    image: jagglo/playomics_env_data:1.0.0
     volumes:
       - playomics_data:/volume-data
 
