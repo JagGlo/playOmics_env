@@ -1,0 +1,315 @@
+---
+title: "Ensembling approach"
+output: html_notebook
+---
+
+# Prepare data
+
+```{r}
+results <- read_model_data(
+  experiment_name = my_experiment_name,
+  directory = here::here()
+)
+
+selected_models <-
+  results
+```
+
+
+```{r}
+my_experiment_name <- "final_top5_cv5"
+
+predictions <- read_logged_predictions(
+  experiment_name = my_experiment_name,
+  prediction_type = "test",
+  directory = here::here()
+) %>% 
+  left_join(
+    results %>% 
+      transmute(dir = model_dir, model_name),
+    by = "dir"
+  ) %>% 
+  select(-dir)
+```
+
+```{r}
+pred_spread <- predictions %>% 
+  select(model_name, .pred_ductal, ID) %>% 
+  spread(model_name, .pred_ductal) %>% 
+  select(-ID) %>% 
+  mutate_all(as.numeric)
+```
+
+```{r}
+exemplary_dataset <- validation_set %>% 
+  prepare_data_for_modelling(target = my_target) %>% 
+   select(names(train_data_united)) %>% 
+   reduce(full_join, by = c(my_target$id_variable)) 
+```
+# Stepwise metric calculation
+
+```{r}
+ensembling_results <-
+  lapply(seq(0,1,0.25), function(lambda){
+metrics_test_stepwise(selected_models, exemplary_dataset, pred_spread, "miss", "test_mcc", lambda = lambda, vec_of_ensemble_size = c(1, 3, 5, 7, 9, seq(10,50, by = 5)), voting = "soft")
+  })
+
+ensembling_results %>% 
+  show_plots()
+
+ggsave("ens_ex_plots.png", width = 3500, height = 1000, units = "px", dpi = 500)
+```
+
+
+```{r}
+ensembling_results %>% 
+   lapply(function(x){
+  x$predictions
+    }) %>% 
+   bind_rows() %>% 
+  select(-metric_for_model_selection, -tested_metric) %>% 
+  select(n_ensemble, lambda, `TRUE`, `FALSE`, n_not_classified, adjusted_acc, accuracy) %>% 
+  filter(lambda == 0.5)
+```
+
+```{r}
+ensembling_results %>% 
+   lapply(function(x){
+  x$models
+    }) %>% 
+   bind_rows() %>% 
+  filter(lambda == 0.5)
+```
+
+# DES
+
+```{r}
+perform_des_all <- function(df, data_to_predict, selected_models, my_target, k) {
+  lapply(1:nrow(data_to_predict), function(x) {
+
+    # Extract a single test case
+    new_point <- data_to_predict[x, !names(data_to_predict) %in% my_target$target_variable]
+
+    # Identify available data for this point (no missings in the input data)
+    avail_columns <- colnames(new_point[, colSums(is.na(new_point)) == 0])
+
+    df_new <- df[complete.cases(df[avail_columns]), ]
+    avail_data_to_predict <- df_new[avail_columns]
+    
+     # Filter models based on whether they use variables present in avail_columns
+    models_to_eval <- selected_models %>%
+      filter(sapply(str_split(model_name, "\\s\\+\\s"), function(vars) all(vars %in% avail_columns)))
+    
+    if(length(avail_data_to_predict) > 0){
+# print(x)
+    # Mask the data to calculate nearest neighbor based on the avail data
+    dist_to_p <-
+      as.matrix(dist(rbind(avail_data_to_predict, new_point[avail_columns]), method = "euclidean"))[nrow(avail_data_to_predict) + 1, 1:nrow(avail_data_to_predict)]
+
+    sorted_indices <- order(dist_to_p)
+    # select k neighbours with closes distance
+    k_nearest_indices <- df_new[sorted_indices[1:k], ]
+
+   
+
+    # Evaluate each model
+    predictions <-
+      models_to_eval %>%
+      split(., .$model_dir) %>%
+      lapply(function(model) {
+        # Load model and predict
+        predicted <- load_and_predict(model$model_dir, k_nearest_indices)
+
+        # Add metadata columns and bind to predictions
+        predicted <-
+          bind_cols(predicted,
+            model_name = model$model_name,
+            k = k,
+            test_case = x,
+            truth = k_nearest_indices[, my_target$target_variable]
+          )
+      }) %>%
+      bind_rows()
+    if (nrow(predictions) > 0) {
+      ideal_fit <-
+        predictions %>%
+        group_by(test_case, model_name) %>%
+        summarise(how_good = sum(.pred_class == histological_type), .groups = "drop")  %>%
+        filter(how_good > 0)
+      # pull(model_name)
+    if (nrow(ideal_fit) > 0) {
+      # Use identified best-fitting models to predict on new data
+      predictions_for_p <-
+        models_to_eval %>%
+        filter(model_name %in% ideal_fit$model_name) %>%
+        split(., .$model_dir) %>%
+        lapply(function(model) {
+          predicted <- load_and_predict(model$model_dir, new_point)
+          bind_cols(predicted,
+            model_name = model$model_name,
+            test_case = x
+          )
+        }) %>%
+        bind_rows()
+
+      # KNORA-U
+      # Aggregate final predictions and add metadata
+      final_pred <-
+        predictions_for_p %>%
+        left_join(ideal_fit, by = c("model_name", "test_case")) %>% 
+        group_by(`.pred_class`) %>%
+        summarise(
+          n = sum(how_good), .groups = "drop"
+          # mean_p_for_ductal = mean(`.pred_ductal`)
+        ) %>%
+        arrange(desc(n)) %>%
+        mutate(votes = paste0("votes_for_", `.pred_class`)) %>%
+        select(-`.pred_class`) %>%
+        spread(votes, n)
+
+      # Bind columns with test data and assign case number
+      bind_cols(final_pred, data_to_predict[x, 31]) %>%
+        add_column(test_case = x, .before = 1) %>%
+        add_column(no_of_model_voting = nrow(ideal_fit))
+      } else {
+        return(NULL)
+      }
+    } else {
+      return(NULL)
+    }
+    } else return(NULL)
+  }) %>%
+    bind_rows() %>% 
+    mutate(final_vote = case_when(
+      votes_for_ductal > votes_for_lobular ~ "ductal",
+      !is.na(votes_for_ductal) & is.na(votes_for_lobular) ~ "ductal",
+      votes_for_ductal == votes_for_lobular ~ "tie",
+      TRUE ~ "lobular"
+    ))
+  }
+```
+
+```{r}
+res_all <-
+   lapply(7, function(k){
+  # lapply(c(100), function(n_models){
+ 
+     # slice_max(test_mcc, n = n_models)
+  res_all <- 
+    perform_des_all(df = val_data_na, data_to_predict = test_data_na, selected_models, my_target = my_target, k = k)
+res_all 
+#   mutate(final_vote = case_when(
+#     votes_for_ductal > votes_for_lobular ~ "ductal",
+#     !is.na(votes_for_ductal) & is.na(votes_for_lobular) ~ "ductal",
+#                                      TRUE ~ "lobular"))
+#  summarise(correct = sum(final_vote == histological_type),
+#            incorrect = sum(final_vote != histological_type),
+#    adj_acc = sum(final_vote == histological_type)/100  * 100,
+#           avg_n_models = mean(no_of_model_voting),
+#           n_not_classified = 100-n()) %>%
+# mutate(n_global = n_models)
+# }) %>% 
+#   bind_rows()  %>%
+#   mutate(k = k)
+  }) %>%
+  bind_rows()
+res_all %>% 
+  summarise(correct = sum(final_vote == histological_type),
+           incorrect = sum(final_vote != histological_type),
+           tie = sum(final_vote == "tie"),
+   adj_acc = sum(final_vote == histological_type)/100  * 100,
+          avg_n_models = mean(no_of_model_voting),
+          n_not_classified = 100-n())
+```
+
+
+```{r}
+res_all_global_again <-
+   lapply(7, function(k){
+  lapply(c(5, 10, 50), function(n_models){
+   new_selected_models <-
+  results %>% 
+    filter(m_vars == "3-vars") %>% 
+    na.omit() %>% 
+    slice_max(test_mcc, n = n_models, with_ties = F) 
+  res_all <- 
+    perform_des_all(df = val_data_na, data_to_predict = test_data_na, new_selected_models, my_target = my_target, k = k)
+res_all %>% 
+  summarise(correct = sum(final_vote == histological_type),
+           incorrect = sum(final_vote != histological_type),
+           tie = sum(final_vote == "tie"),
+   adj_acc = sum(final_vote == histological_type)/100  * 100,
+          avg_n_models = mean(no_of_model_voting),
+          n_not_classified = 100-n()) %>% 
+mutate(n_global = n_models)
+}) %>%
+  bind_rows()  
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+all_models <-  data.frame(correct = 91, incorrect = 6,  tie = 0, adj_acc = 91, avg_n_models = 847, n_not_classified = 3, n_global = "all")
+ 
+DES_val_na_test_na <-
+bind_rows(
+res_all_global %>% mutate(n_global = as.character(n_global)),
+all_models)
+  
+```
+
+```{r}
+res_all_val_test <-
+   lapply(7, function(k){
+  lapply(c("all"), function(n_models){
+   new_selected_models <-
+  results %>% 
+    filter(m_vars == "3-vars") %>% 
+    na.omit()
+  res_all <- 
+    perform_des_all(df = val_data_na, data_to_predict = test_data, new_selected_models, my_target = my_target, k = k)
+res_all %>% 
+  summarise(correct = sum(final_vote == histological_type),
+           incorrect = sum(final_vote != histological_type),
+           tie = sum(final_vote == "tie"),
+   adj_acc = sum(final_vote == histological_type)/100  * 100,
+          avg_n_models = mean(no_of_model_voting),
+          n_not_classified = 100-n()) %>% 
+mutate(n_global = n_models)
+}) %>%
+  bind_rows()  
+  }) %>%
+  bind_rows()
+```
+
+
+```{r}
+res_all_val_test
+```
+
+```{r}
+res_all_val_na_test <-
+   lapply(7, function(k){
+  lapply(c(10, 100, 500), function(n_models){
+   new_selected_models <-
+  results %>% 
+    filter(m_vars == "3-vars") %>% 
+    na.omit() %>% 
+    slice_max(test_mcc, n = n_models) 
+  res_all <- 
+    perform_des_all(df = val_data_na, data_to_predict = test_data, new_selected_models, my_target = my_target, k = k)
+res_all %>% 
+  summarise(correct = sum(final_vote == histological_type),
+           incorrect = sum(final_vote != histological_type),
+           tie = sum(final_vote == "tie"),
+   adj_acc = sum(final_vote == histological_type)/100  * 100,
+          avg_n_models = mean(no_of_model_voting),
+          n_not_classified = 100-n()) %>% 
+mutate(n_global = n_models)
+}) %>%
+  bind_rows()  
+  }) %>%
+  bind_rows()
+
+res_all_val_na_test
+```

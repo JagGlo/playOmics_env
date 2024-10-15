@@ -1,0 +1,163 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(playOmics)
+library(tidymodels)
+library(logger)
+```
+
+
+- **Function Parameters:**
+
+  - `fs_methods`: A vector of feature selection methods to use. Available methods: "auc", "information_gain", "mrmr", "Lasso", "RF".
+  - `feature_sel_strategies`: Either "separate", "non-separate", or both.
+  - `n_features`: A vector of integers defining the number of features to select/evaluate.
+  - `allow_missing_values`: Logical flag to allow for missing values (`TRUE` or `FALSE`).
+  - `n_folds`: Number of folds for cross-validation.
+  - `nrepeat`: Number of repetitions for the simulation.
+  - `selected_datasets`: A vector of dataset names to use as simulation input.
+  - `directory`: The path to the logging directory.
+  - `log_file`: The name of the log file to record simulation logs.
+  - `output_dir`: The directory where results and logs will be saved.
+
+- **Function Structure:**
+
+  - **Helper Functions:** The function defines helper functions within `run_simulation()` to keep implementation details hidden.
+    - `get_data()`: Reads and prepares the data.
+    - `select_features_based_on_proportion()`: Selects features based on their proportion across datasets.
+    - `perform_feature_selection()`: Performs feature selection using the specified method.
+    - `score_models()`: Trains and evaluates machine learning models.
+
+  - **Main Simulation Loop:** Iterates over the specified number of repetitions, datasets, folds, methods, and strategies to perform simulations.
+
+- **Logging:** The function uses the `logger` package to record progress and errors in a log file specified by `log_file`.
+
+- **Results:** The results are saved as RDS files in the `output_dir`. Each result file is named based on the dataset, method, number of features, repetition, and fold.
+
+
+
+```{r}
+# define data for analysis
+training_data <- BRCA_data_splitted$train_data
+
+training_data_prepared <-
+    playOmics::prepare_data_for_modelling(data = training_data, target = my_target, remove_correlated_features = F)
+```
+```{r}
+# Load the simulation function
+source("FS_simulation_functions.R")
+```
+
+```{r}
+# Define your parameters
+params <- list(
+  experiment_name = "FS_simulation_results_bigger",
+  data = data_prepared[1:100],
+  fs_methods = c("auc", "information_gain"),
+  feature_sel_strategies = c("non-separate", "separate"),
+  n_features = c(10, 20),
+  allow_missing_values = FALSE,
+  models = c("LR", "SVM", "XGB", "RF"),
+  n_folds = 2,
+  nrepeat = 1,
+  output_dir = getwd(),
+  n_threads = parallel::detectCores()/2
+)
+```
+
+
+```{r}
+new_target <-
+  define_target(
+    phenotype_df_name = "clinical",
+    id_variable_name = "ID",
+    target_variable_name = "histological_type",
+    positive_class_name = "lobular"
+  )
+
+# Run the simulation
+run_simulation(
+  experiment_name = params$experiment_name,
+  data = params$data,
+  target = new_target,
+  fs_methods = params$fs_methods,
+  feature_sel_strategies = params$feature_sel_strategies,
+  n_features = params$n_features,
+  allow_missing_values = params$allow_missing_values,
+  models = "LR",
+  n_folds = params$n_folds,
+  nrepeat = params$nrepeat,
+  output_dir = params$output_dir,
+  n_threads = params$n_threads
+)
+
+```
+
+
+```{r}
+# Read simulation results
+results_files <- list.files(file.path(params$output_dir, params$experiment_name), "results.Rds", full.names = T)
+
+results_all <-
+  lapply(results_files, function(x) {
+    readRDS(x)
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+results_all %>% 
+    arrange(sel_method, num_feat) %>% 
+  mutate(no_of_feat = if_else(sel_method %in% c("Lasso"),as.character("NA"), as.character(num_feat))) %>% 
+    arrange(sel_method, num_feat) %>% 
+  mutate(no_of_feat = fct_inorder(no_of_feat)) %>% 
+  mutate(sel_method = if_else(sel_method== "information_gain", "IG", sel_method)) %>% 
+  ggplot2::ggplot(aes(x = model, y = test_mcc, color = no_of_feat)) +
+    geom_boxplot() +
+  labs(color = "No. of feat.", y = "Mean test MCC", x = NULL) +
+  theme(axis.text.x= element_text(angle=60, hjust=1)) +
+  facet_wrap(~sep_mode+sel_method, scales = "free") +
+  theme_bw() +
+  theme(axis.text.x= element_text(angle=60, hjust=1), 
+        axis.title.x=element_blank(),
+        legend.position = "bottom")
+
+# ggsave("all_results_comparison.png", width = 2500, height = 1500, units = "px")
+```
+
+```{r}
+results_all %>% 
+    arrange(sel_method, num_feat) %>% 
+  mutate(no_of_feat = if_else(sel_method %in% c("Lasso"),as.character("NA"), as.character(num_feat))) %>% 
+    arrange(sel_method, num_feat) %>% 
+  mutate(no_of_feat = fct_inorder(no_of_feat)) %>% 
+  mutate(sel_method = if_else(sel_method== "information_gain", "IG", sel_method)) %>% 
+  ggplot2::ggplot(aes(x = no_of_feat, y = test_mcc, color = model)) +
+    geom_boxplot() +
+  labs(color = "No. of feat.", y = "Mean test MCC", x = NULL) +
+  theme(axis.text.x= element_text(angle=60, hjust=1)) +
+  facet_wrap(~sel_method, scales = "free") +
+  theme_bw() +
+  theme(axis.text.x= element_text(angle=60, hjust=1), 
+        axis.title.x=element_blank(),
+        legend.position = "bottom")
+```
+
+
+```{r}
+ranking_files <- list.files(file.path(params$output_dir, params$experiment_name), "_ranking", full.names = T)
+
+rankings <-
+  lapply(ranking_files, function(x) {
+    readRDS(x)
+  })
+
+visualize_ranking(rankings[1])
+```
+
+
