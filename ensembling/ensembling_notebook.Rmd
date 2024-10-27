@@ -3,6 +3,11 @@ title: "Ensembling approach"
 output: html_notebook
 ---
 
+```{r}
+source("ensembling_helpers.R")
+```
+
+
 # Prepare data
 
 ```{r}
@@ -17,8 +22,6 @@ selected_models <-
 
 
 ```{r}
-my_experiment_name <- "final_top5_cv5"
-
 predictions <- read_logged_predictions(
   experiment_name = my_experiment_name,
   prediction_type = "test",
@@ -33,25 +36,43 @@ predictions <- read_logged_predictions(
 ```
 
 ```{r}
-pred_spread <- predictions %>% 
-  select(model_name, .pred_ductal, ID) %>% 
-  spread(model_name, .pred_ductal) %>% 
+my_target <-
+      playOmics::define_target(
+        phenotype_df_name = "clinical",
+        id_variable_name = "ID",
+        target_variable_name = "histological_type"
+      )
+my_target$target_levels <- levels(pull(predictions, !!sym(my_target$target_variable)))
+
+predicted_as_positive <- 
+          if(!is.null(my_target$positive_class)){
+            paste0(".pred_", my_target$positive_class)
+          } else {
+            paste0(".pred_", my_target$target_levels[1])
+          }
+
+pred_spread <- 
+  predictions %>% 
+  select(model_name, !!predicted_as_positive, ID) %>% 
+  spread(model_name, !!predicted_as_positive) %>% 
   select(-ID) %>% 
   mutate_all(as.numeric)
 ```
 
 ```{r}
-exemplary_dataset <- validation_set %>% 
+load(paste(here::here(), my_experiment_name, "train_data.RData", sep = "/"))
+
+exemplary_dataset <- exemplary_set %>% 
   prepare_data_for_modelling(target = my_target) %>% 
-   select(names(train_data_united)) %>% 
-   reduce(full_join, by = c(my_target$id_variable)) 
+   select(names(train_data))
 ```
+
 # Stepwise metric calculation
 
 ```{r}
 ensembling_results <-
   lapply(seq(0,1,0.25), function(lambda){
-metrics_test_stepwise(selected_models, exemplary_dataset, pred_spread, "miss", "test_mcc", lambda = lambda, vec_of_ensemble_size = c(1, 3, 5, 7, 9, seq(10,50, by = 5)), voting = "soft")
+metrics_test_stepwise(selected_models, exemplary_dataset, pred_spread, "miss", "test_accuracy", lambda = lambda, vec_of_ensemble_size = c(1, 3, 5, 7, 9, seq(10,10, by = 5)), voting = "soft", my_target)
   })
 
 ensembling_results %>% 
@@ -67,13 +88,12 @@ ensembling_results %>%
   x$predictions
     }) %>% 
    bind_rows() %>% 
-  select(-metric_for_model_selection, -tested_metric) %>% 
   select(n_ensemble, lambda, `TRUE`, `FALSE`, n_not_classified, adjusted_acc, accuracy) %>% 
   filter(lambda == 0.5)
 ```
 
 ```{r}
-ensembling_results %>% 
+ensembling_results_train %>% 
    lapply(function(x){
   x$models
     }) %>% 

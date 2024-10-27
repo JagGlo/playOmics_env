@@ -5,8 +5,8 @@ show_plots <- function(data){
       x$predictions
     }) %>%
     bind_rows() %>%
-    filter(n_ensemble <=30, lambda >=0) %>%
-    rename(`  missing predictions` =  `<NA>`, ` adjusted accuracy` = adjusted_acc) %>%
+    rename(`  missing predictions` =  `n_not_classified`, 
+           ` adjusted accuracy` = adjusted_acc) %>%
     mutate(lambda = as.factor(lambda)) %>%
     select(n_ensemble, lambda, `  missing predictions`, ` adjusted accuracy`, accuracy) %>%
     # pivot_longer(cols = -c(n_ensemble, equation, lambda, metric_for_model_selection, tested_metric), names_to = "key", values_to = "value") %>%
@@ -41,30 +41,26 @@ calculate_Miss <- function(pred1, pred2) {
   return(Miss_Diss)
 }
 # Initialize a matrix to store Q values
-num_classifiers <- ncol(pred_spread_na)
-Miss_matrix_na <- matrix(NA, nrow = num_classifiers, ncol = num_classifiers)
-
-# Iterate over all unique pairs of classifiers
-for(i in 1:(num_classifiers-1)) {
-  for(j in (i+1):num_classifiers) {
-    Miss_matrix_na[i, j] <- calculate_Miss(pred_spread_na[,i], pred_spread_na[,j])
-    Miss_matrix_na [j, i] <- Miss_matrix_na [i, j]
-  }
-}
-
-diag(Miss_matrix_na) <- NA
-colnames(Miss_matrix_na) <- colnames(pred_spread_na)
-rownames(Miss_matrix_na) <- colnames(pred_spread_na)
-
-
-
+# num_classifiers <- ncol(pred_spread_na)
+# Miss_matrix_na <- matrix(NA, nrow = num_classifiers, ncol = num_classifiers)
+# 
+# # Iterate over all unique pairs of classifiers
+# for(i in 1:(num_classifiers-1)) {
+#   for(j in (i+1):num_classifiers) {
+#     Miss_matrix_na[i, j] <- calculate_Miss(pred_spread_na[,i], pred_spread_na[,j])
+#     Miss_matrix_na [j, i] <- Miss_matrix_na [i, j]
+#   }
+# }
+# 
+# diag(Miss_matrix_na) <- NA
+# colnames(Miss_matrix_na) <- colnames(pred_spread_na)
+# rownames(Miss_matrix_na) <- colnames(pred_spread_na)
+# 
+# 
 
 composite_metric <- function(metric_for_model_selection, metric_of_interest, lambda) {
   return(lambda * metric_for_model_selection + (1-lambda) * metric_of_interest)
 }
-
-
-
 
 metrics_test_look_at_all <- function(selected_models, data_to_predict, metric_matrix, tested_metric, metric_for_model_selection, lambda, vec_of_ensemble_size) {
 
@@ -159,7 +155,7 @@ metrics_test_look_at_all <- function(selected_models, data_to_predict, metric_ma
         lapply(function(model) {
           predicted <- load_and_predict(model$model_dir, data_to_predict) %>%
             add_column(model_name = model$model_name, .before = 1) %>%
-            mutate(ID = 1:100)
+            mutate(ID = 1:nrow(data_to_predict))
         }) %>%
         bind_rows()
 
@@ -184,7 +180,7 @@ metrics_test_look_at_all <- function(selected_models, data_to_predict, metric_ma
         )) %>%
         full_join(
           data_to_predict %>%
-            mutate(ID = 1:100) %>%
+            mutate(ID = 1:nrow(data_to_predict)) %>%
             select(ID, histological_type),
           by = "ID"
         ) %>%
@@ -196,7 +192,7 @@ metrics_test_look_at_all <- function(selected_models, data_to_predict, metric_ma
         mutate(
           adjusted_acc = `TRUE` / nrow(data_to_predict),
           accuracy = `TRUE` / nrow(final_pred),
-          n_not_classified = 100-nrow(final_pred)
+          n_not_classified = nrow(data_to_predict)-nrow(final_pred)
         )
 
       predictions <-
@@ -232,7 +228,7 @@ calculate_Miss_step <- function(pred1, pred2) {
   return(Miss_Diss_mod)
 }
 
-metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_per_model, tested_metric, metric_for_model_selection, lambda, vec_of_ensemble_size, voting = "majority") {
+metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_per_model, tested_metric, metric_for_model_selection, lambda, vec_of_ensemble_size, voting = "majority", target) {
 
   if(lambda != 1){
     # Find the row in 'selected_models' corresponding to the best model
@@ -318,6 +314,8 @@ metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_
         model_name)
   }
 
+  pred_cols <- paste0(".pred_", target$target_levels)
+
   predictions <-
     lapply(vec_of_ensemble_size, function(n){
       if(n <= nrow(chosen_models)){
@@ -328,7 +326,7 @@ metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_
           lapply(function(model) {
             predicted <- load_and_predict(model$model_dir, data_to_predict) %>%
               add_column(model_name = model$model_name, .before = 1) %>%
-              mutate(ID = 1:100)
+              mutate(ID = 1:nrow(data_to_predict))
           }) %>%
           bind_rows()
         if(voting == "majority"){
@@ -337,35 +335,55 @@ metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_
             group_by(ID) %>%
             count(`.pred_class`) %>%
             filter(!is.na(`.pred_class`)) %>%
-            arrange(desc(n)) %>%
             mutate(votes = paste0("votes_for_", `.pred_class`)) %>%
             select(-`.pred_class`) %>%
-            spread(votes, n)
+            pivot_wider(
+              names_from = votes,
+              values_from = n,
+              values_fill = list(n = 0)  # Fill missing votes with 0
+            )
         } else if(voting == "soft"){
           final_pred <- predictions_for_p %>%
             filter(!is.na(`.pred_class`)) %>%
             group_by(ID) %>%
             summarise(
-              votes_for_lobular = mean(`.pred_lobular`, na.rm = T),
-              votes_for_ductal = mean(`.pred_ductal`, na.rm = T))
+              across(
+                all_of(pred_cols),
+                ~ mean(.x, na.rm = TRUE),
+                .names = "votes_for_{str_remove(.col, '^.pred_')}"
+              )
+            )
         }
 
         predictions <-
           final_pred %>%
-          mutate(final_class = case_when(
-            is.na(votes_for_lobular) & !is.na(votes_for_ductal) ~ "ductal",
-            !is.na(votes_for_lobular) & is.na(votes_for_ductal) ~ "lobular",
-            votes_for_ductal > votes_for_lobular ~ "ductal",
-            votes_for_ductal < votes_for_lobular ~ "lobular",
-            !is.na(votes_for_lobular) & !is.na(votes_for_ductal) & (votes_for_ductal == votes_for_lobular) ~ "tie"
-          )) %>%
+          pivot_longer(
+            cols = starts_with("votes_for_"),
+            names_prefix = "votes_for_",
+            names_to = "class",
+            values_to = "vote"
+          ) %>%
+          group_by(ID) %>%
+          summarise(
+            max_vote = max(vote, na.rm = TRUE),
+            n_max = sum(vote == max_vote, na.rm = TRUE),
+            classes_with_max = paste(class[vote == max_vote], collapse = ", "),
+            .groups = 'drop'
+          ) %>%
+          mutate(
+            final_class = case_when(
+              is.infinite(max_vote) ~ NA_character_,
+              n_max == 1 ~ classes_with_max,
+              n_max > 1 ~ "tie"
+            )
+          ) %>%
           full_join(
             data_to_predict %>%
-              mutate(ID = 1:100) %>%
-              select(ID, histological_type),
+              mutate(ID = 1:nrow(data_to_predict)) %>%
+              select(ID, !!target$target_variable),
             by = "ID"
           ) %>%
-          mutate(correct = final_class == histological_type,
+          mutate(correct = final_class == !!sym(target$target_variable),
                  correct = if_else(final_class == "tie", "tie", as.character(correct))) %>%
           ungroup() %>%
           count(correct) %>%
@@ -373,16 +391,14 @@ metrics_test_stepwise <- function(selected_models, data_to_predict, predictions_
           mutate(
             adjusted_acc = `TRUE` / nrow(data_to_predict),
             accuracy = `TRUE` / nrow(final_pred),
-            n_not_classified = 100-nrow(final_pred)
+            n_not_classified = nrow(data_to_predict)-nrow(final_pred)
           )
 
         predictions <-
           bind_cols(
             data.frame(
               n_ensemble = n,
-              lambda = lambda,
-              metric_for_model_selection = metric_for_model_selection,
-              tested_metric = tested_metric
+              lambda = lambda
             ),
             predictions
           )
