@@ -1,22 +1,25 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "Feature Selection - Simulations"
+output: 
+  html_notebook:
+    toc: true
 ---
 
-```{r}
-# Load necessary libraries
-library(tidyverse)
-library(playOmics)
-library(tidymodels)
-library(logger)
-```
+# Introduction
 
+Feature selection is a critical step in machine learning and data analysis, especially when dealing with high-dimensional datasets typical in multi-omics studies. By selecting the most relevant features, we can improve model performance, reduce computational complexity, and enhance the interpretability of results. This simulation study aims to evaluate various feature selection methods to identify the most effective techniques for different data characteristics and analytical objectives.
 
-- **Function Parameters:**
+# Overview
 
-  - `fs_methods`: A vector of feature selection methods to use. Available methods: "auc", "information_gain", "mrmr", "Lasso", "RF".
-  - `feature_sel_strategies`: Either "separate", "non-separate", or both.
-  - `n_features`: A vector of integers defining the number of features to select/evaluate.
+Research findings on feature selection methods conducted in this study, as well as in existing literature, indicate that there is no one-size-fits-all feature selection method that excels across all types of data. The optimal choice of a feature selection method should be based on the dataset's characteristics and the specific goals of the analysis. To address this challenge, a simulation framework has been implemented to assess different feature selection methods before making a final selection for subsequent analyses.
+
+A simulation-based approach, unlike relying solely on published datasets, allows for dynamic testing of methods tailored to the specificities of the data under investigation, such as the number of features, the ratio of samples to features, the representation of various omics data, and the presence of missing values. This enables a precise evaluation of the impact of feature selection methods on classification results and the stability of feature selection, which is particularly important in multi-omics analyses. Such insights are difficult to obtain directly from literature, as research outcomes can be specific to the datasets used in particular experiments and may not be universally applicable.
+
+# Function Parameters:
+
+  - `fs_methods`: A vector of feature selection methods to use. 
+  - `feature_sel_strategies`: Either "separate", "combined", or both.
+  - `n_features`: A vector of integers defining the number of features to select/evaluate; **if empty, only ranking will be performed**.
   - `allow_missing_values`: Logical flag to allow for missing values (`TRUE` or `FALSE`).
   - `n_folds`: Number of folds for cross-validation.
   - `nrepeat`: Number of repetitions for the simulation.
@@ -24,140 +27,558 @@ library(logger)
   - `directory`: The path to the logging directory.
   - `log_file`: The name of the log file to record simulation logs.
   - `output_dir`: The directory where results and logs will be saved.
+  
+# Assumptions
 
-- **Function Structure:**
+Several assumptions underpin the simulation study to ensure the validity and reliability of the results:
 
-  - **Helper Functions:** The function defines helper functions within `run_simulation()` to keep implementation details hidden.
-    - `get_data()`: Reads and prepares the data.
-    - `select_features_based_on_proportion()`: Selects features based on their proportion across datasets.
-    - `perform_feature_selection()`: Performs feature selection using the specified method.
-    - `score_models()`: Trains and evaluates machine learning models.
+1. **Metric Selection:** The Matthews Correlation Coefficient (MCC) is chosen as the primary metric for evaluating model performance. MCC is a balanced measure that accounts for true and false positives and negatives, making it suitable for binary classification tasks, especially when classes are imbalanced.
 
-  - **Main Simulation Loop:** Iterates over the specified number of repetitions, datasets, folds, methods, and strategies to perform simulations.
+2. **Data Integrity:** It is assumed that the input data is correctly formatted, with appropriate identifiers and target variables defined. The simulation handles missing data based on the `allow_missing_values` parameter.
 
-- **Logging:** The function uses the `logger` package to record progress and errors in a log file specified by `log_file`.
+3. **Feature Selection Methods:** The simulation evaluates both univariate and multivariate feature selection methods, recognizing that their effectiveness may vary depending on the dataset's characteristics and the underlying biological processes.
 
-- **Results:** The results are saved as RDS files in the `output_dir`. Each result file is named based on the dataset, method, number of features, repetition, and fold.
+4. **Modeling Algorithms:** Selected classification algorithms (e.g., SVM, XGBoost) are appropriate for the task and capable of leveraging the features selected by the feature selection methods.
 
+5. **Cross-Validation:** The use of cross-validation (with a specified number of folds) ensures that the model evaluation is robust and generalizable across different subsets of the data.
 
+6. **Computational Resources:** The simulation assumes adequate computational resources are available, as specified by the `n_threads` parameter, to handle parallel processing efficiently.
 
-```{r}
-# define data for analysis
-training_data <- BRCA_data_splitted$train_data
+7. **Reproducibility:** Random seeds are set where necessary to ensure that the simulation results are reproducible.
 
-training_data_prepared <-
-    playOmics::prepare_data_for_modelling(data = training_data, target = my_target, remove_correlated_features = F)
+# Simulation Guide
+
+This section provides a comprehensive guide to running the feature selection simulations, including setting up parameters, preparing data, executing the simulation, and analyzing the results.
+
+## Setting Up the Environment
+
+Before initiating the simulation, ensure that all necessary libraries are installed and loaded. The primary library used is `playOmics`, which provides tools for multi-omics data analysis.
+
+```{r setup}
+# Load necessary libraries
+library(playOmics)
+library(tidymodels)
 ```
+
+## Defining the Experiment
+
+Establish the working directory and name your experiment to organize simulation results and logs effectively.
+
 ```{r}
-# Load the simulation function
-source("FS_simulation_functions.R")
+here::set_here()
+my_experiment_name <- "luad_experiment"
+```
+
+## Preparing the Data
+
+Load and prepare the dataset for analysis. This includes reading the data, visualizing coverage, defining target variables, and splitting the data into training and testing sets.
+
+```{r}
+# Load the LUAD dataset
+LUAD_data <- readRDS("~/workspace/TCGA/LUAD_data.Rds")
+
+# Visualize data coverage
+plot_coverage(LUAD_data)
 ```
 
 ```{r}
-# Define your parameters
-params <- list(
-  experiment_name = "FS_simulation_results_bigger",
-  data = data_prepared[1:100],
-  fs_methods = c("auc", "information_gain"),
-  feature_sel_strategies = c("non-separate", "separate"),
-  n_features = c(10, 20),
-  allow_missing_values = FALSE,
-  models = c("LR", "SVM", "XGB", "RF"),
-  n_folds = 2,
-  nrepeat = 1,
-  output_dir = getwd(),
-  n_threads = parallel::detectCores()/2
+# Define the target variable
+my_target <- define_target(
+  phenotype_df_name = "clinical",
+  id_variable_name = "ID",
+  target_variable_name = "histological_type"
+)
+
+# Split data into training and testing sets
+splitted_data <- split_data_into_train_test(LUAD_data, prop = 9 / 10, target = my_target)
+
+# Define training data for analysis
+training_data <- splitted_data$train_data
+
+# Prepare training data for modeling
+training_data_prepared <- playOmics::prepare_data_for_modelling(
+  data = training_data, 
+  target = my_target, 
+  remove_correlated_features = FALSE
 )
 ```
 
+## Loading Simulation Functions
+
+Source the simulation functions necessary for executing the feature selection and evaluation processes.
 
 ```{r}
-new_target <-
-  define_target(
-    phenotype_df_name = "clinical",
-    id_variable_name = "ID",
-    target_variable_name = "histological_type",
-    positive_class_name = "lobular"
-  )
+# Load the simulation functions
+source("FS_simulation_functions.R")
+```
 
+## Running the Simulation
+
+Define simulation parameters, execute the simulation, and read the results.
+
+```{r}
+# Define simulation parameters
+params <- list(
+  experiment_name = my_experiment_name,
+  data = training_data_prepared,
+  fs_methods = c("auc", "Lasso", "RF", "mrmr"),
+  feature_sel_strategies = c("combined", "separate"),
+  no_of_feat = c(10, 20),
+  allow_missing_values = FALSE,
+  models = c("SVM", "LR"),
+  n_folds = 3,
+  nrepeat = 2,
+  output_dir = getwd(),
+  n_threads = 10
+)
+```
+
+```{r}
 # Run the simulation
 run_simulation(
   experiment_name = params$experiment_name,
   data = params$data,
-  target = new_target,
+  target = my_target,
   fs_methods = params$fs_methods,
   feature_sel_strategies = params$feature_sel_strategies,
-  n_features = params$n_features,
+  n_features = params$no_of_feat,
   allow_missing_values = params$allow_missing_values,
-  models = "LR",
+  models = params$models,
   n_folds = params$n_folds,
   nrepeat = params$nrepeat,
   output_dir = params$output_dir,
   n_threads = params$n_threads
 )
-
 ```
 
+# Reading Simulation Results
+
+After running the simulation, load the results and rankings for analysis.
 
 ```{r}
 # Read simulation results
-results_files <- list.files(file.path(params$output_dir, params$experiment_name), "results.Rds", full.names = T)
+results_all <- read_results(params$experiment_name, params$output_dir)
 
-results_all <-
-  lapply(results_files, function(x) {
-    readRDS(x)
-  }) %>%
-  bind_rows()
+# Read feature rankings
+rankings <- read_rankings(params$experiment_name, params$output_dir)
+```
+
+# Methods Overview
+
+## Comparison of All Selection Methods
+
+This section compares the performance of all feature selection methods based on the Mean Matthews Correlation Coefficient (MCC) achieved during test
+
+```{r}
+results_all %>% 
+  ggplot(aes(x = sel_method, y = test_mcc, color = sel_method)) +
+    geom_boxplot() +
+  labs(y = "Mean Train MCC", x = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "none"
+  )
+
+ggsave(
+  "all_results_comparison.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
 ```
 
 ```{r}
 results_all %>% 
-    arrange(sel_method, num_feat) %>% 
-  mutate(no_of_feat = if_else(sel_method %in% c("Lasso"),as.character("NA"), as.character(num_feat))) %>% 
-    arrange(sel_method, num_feat) %>% 
-  mutate(no_of_feat = fct_inorder(no_of_feat)) %>% 
-  mutate(sel_method = if_else(sel_method== "information_gain", "IG", sel_method)) %>% 
-  ggplot2::ggplot(aes(x = model, y = test_mcc, color = no_of_feat)) +
-    geom_boxplot() +
-  labs(color = "No. of feat.", y = "Mean test MCC", x = NULL) +
-  theme(axis.text.x= element_text(angle=60, hjust=1)) +
-  facet_wrap(~sep_mode+sel_method, scales = "free") +
-  theme_bw() +
-  theme(axis.text.x= element_text(angle=60, hjust=1), 
-        axis.title.x=element_blank(),
-        legend.position = "bottom")
+  group_by(sel_method) %>%
+   summarise(
+    mean = round(mean(test_mcc, na.rm = TRUE), 3),
+    sd = round(sd(test_mcc, na.rm = TRUE), 3),
+    median = round(median(test_mcc, na.rm = TRUE), 3),
+    min = round(min(test_mcc, na.rm = TRUE), 3),
+    max = round(max(test_mcc, na.rm = TRUE), 3)
+  ) 
+```
 
-# ggsave("all_results_comparison.png", width = 2500, height = 1500, units = "px")
+## All Possible Splits
+
+Analyze the impact of different classification algorithms, the number of features, and separation modes on the MCC.
+
+```{r}
+results_all %>% 
+  ggplot(aes(x = sep_mode, y = test_mcc, color = as.factor(no_of_feat))) +
+    geom_boxplot() +
+  labs(
+    color = "Number of Features", 
+    y = "Mean Train MCC", 
+    x = NULL
+  ) +
+  facet_grid(model ~ sel_method, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  "all_results_comparison_detailed.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
 ```
 
 ```{r}
 results_all %>% 
-    arrange(sel_method, num_feat) %>% 
-  mutate(no_of_feat = if_else(sel_method %in% c("Lasso"),as.character("NA"), as.character(num_feat))) %>% 
-    arrange(sel_method, num_feat) %>% 
-  mutate(no_of_feat = fct_inorder(no_of_feat)) %>% 
-  mutate(sel_method = if_else(sel_method== "information_gain", "IG", sel_method)) %>% 
-  ggplot2::ggplot(aes(x = no_of_feat, y = test_mcc, color = model)) +
-    geom_boxplot() +
-  labs(color = "No. of feat.", y = "Mean test MCC", x = NULL) +
-  theme(axis.text.x= element_text(angle=60, hjust=1)) +
-  facet_wrap(~sel_method, scales = "free") +
-  theme_bw() +
-  theme(axis.text.x= element_text(angle=60, hjust=1), 
-        axis.title.x=element_blank(),
-        legend.position = "bottom")
+  group_by(sel_method, model, sep_mode, no_of_feat) %>%
+    summarise(
+      mean_val = paste0(round(mean(test_mcc, na.rm = TRUE), 3), " ± ", round(sd(test_mcc, na.rm = TRUE), 3))
+    ) %>%
+  pivot_wider(names_from = model, values_from = mean_val)
 ```
 
+## Selection Strategy
+
+Evaluate how different feature selection strategies (combined vs. separate) affect the MCC.
 
 ```{r}
-ranking_files <- list.files(file.path(params$output_dir, params$experiment_name), "_ranking", full.names = T)
+results_all %>% 
+  ggplot(aes(x = sep_mode, y = test_mcc, color = sep_mode)) +
+    geom_boxplot() +
+  labs(
+    color = "Separation Mode", 
+    y = "Mean Train MCC", 
+    x = NULL
+  ) +
+  facet_grid(~sel_method, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "none"
+  )
 
-rankings <-
-  lapply(ranking_files, function(x) {
-    readRDS(x)
-  })
-
-visualize_ranking(rankings[1])
+ggsave(
+  "all_results_comparison_sep_mode.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
 ```
 
+```{r}
+results_all %>% 
+  group_by(sel_method, sep_mode) %>%
+    summarise(
+      mean_val = paste0(round(mean(test_mcc, na.rm = TRUE), 3), " ± ", round(sd(test_mcc, na.rm = TRUE), 3))
+    ) %>%
+  pivot_wider(names_from = sel_method, values_from = mean_val)
+```
+
+## Number of Features
+
+Assess the effect of the number of selected features on the MCC across different models and selection methods.
+
+```{r}
+results_all %>% 
+  ggplot(aes(x = no_of_feat, y = test_mcc, color = as.factor(no_of_feat))) +
+    geom_boxplot() +
+  labs(
+    color = "Number of Features", 
+    y = "Mean Train MCC", 
+    x = NULL
+  ) +
+  facet_grid(model ~ sel_method, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "none"
+  )
+
+ggsave(
+  "all_results_comparison_no_of_feat.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
+```
+
+```{r}
+results_all %>% 
+  group_by(sel_method, no_of_feat) %>%
+    summarise(
+      mean_val = paste0(round(mean(test_mcc, na.rm = TRUE), 3), " ± ", round(sd(test_mcc, na.rm = TRUE), 3))
+    ) %>%
+  pivot_wider(names_from = sel_method, values_from = mean_val)
+```
+
+## Overfitting and Underfitting
+
+Investigate the presence of overfitting or underfitting by comparing training and testing MCC scores.
+
+```{r}
+results_all %>% 
+  pivot_longer(cols = c(train_mcc, test_mcc), names_to = "dataset", values_to = "mcc") %>% 
+  ggplot(aes(x = no_of_feat, y = mcc, color = dataset)) +
+    geom_boxplot() +
+  labs(
+    color = "Dataset", 
+    y = "Mean MCC", 
+    x = NULL
+  ) +
+  facet_grid(~sel_method, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  "all_results_comparison_over_underfitting.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
+```
+
+```{r}
+results_all %>% 
+  pivot_longer(cols = c(train_mcc, test_mcc), names_to = "dataset", values_to = "mcc") %>% 
+  group_by(sel_method, no_of_feat, dataset) %>%
+    summarise(
+      mean_val = paste0(round(mean(mcc, na.rm = TRUE), 3), " ± ", round(sd(mcc, na.rm = TRUE), 3))
+    ) %>%
+  pivot_wider(names_from = dataset, values_from = mean_val) %>% 
+  mutate(`Difference in Means` = as.numeric(str_extract(test_mcc, "^[^ ±]+")) - as.numeric(str_extract(train_mcc, "^[^ ±]+")))
+```
+
+# Missing Data
+
+To analyze the impact of missing data on feature selection and model performance, two simulations are conducted: one allowing missing values and one excluding them. The results are then compared to understand how missing data affects the outcomes.
+
+Only few methods accept missing data: these belong to univariate methods (e.g. AUC, information gain, t-test). Moreover, few classification algorithms are able to handle missings (e.g. LR, XGB), therefore the methodology and simulation parameters need to be adjusted.
+
+```{r}
+# Define parameters for missing data simulation
+miss_params <- params
+miss_params$experiment_name <- paste0(my_experiment_name, "_NA_incl")
+miss_params$allow_missing_values <- TRUE
+miss_params$models <- "LR"
+miss_params$fs_methods <- "auc"
+
+# Execute the simulation with missing data allowed
+run_simulation(
+  experiment_name = miss_params$experiment_name,
+  data = miss_params$data,
+  target = my_target,
+  fs_methods = miss_params$fs_methods,
+  feature_sel_strategies = miss_params$feature_sel_strategies,
+  n_features = miss_params$no_of_feat,
+  allow_missing_values = miss_params$allow_missing_values,
+  models = miss_params$models,
+  n_folds = miss_params$n_folds,
+  nrepeat = miss_params$nrepeat,
+  output_dir = miss_params$output_dir,
+  n_threads = miss_params$n_threads
+)
+
+# Read results from simulations with and without missing data
+results_miss <- read_results(miss_params$experiment_name, miss_params$output_dir)
+```
+
+```{r}
+# Assign results to variables for clarity
+non_missing <- results_all
+missing <- results_miss
+```
+
+```{r}
+# Compare simulations with and without missing data
+bind_rows(
+  non_missing %>% add_column(missings = "Complete"),
+  missing %>% add_column(missings = "Missing")
+) %>% 
+  ggplot(aes(x = missings, y = test_mcc, color = missings)) +
+    geom_boxplot() +
+  labs(
+    color = "Data Completeness", 
+    y = "Mean Train MCC", 
+    x = NULL
+  ) +
+  facet_grid(~sel_method, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1), 
+    axis.title.x = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  "missing_data_inclusion.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 10, 
+  height = 6, 
+  units = "in"
+)
+```
+
+```{r}
+# Summarize the impact of missing data on MCC
+bind_rows(
+  non_missing %>% add_column(missings = "Complete"),
+  missing %>% add_column(missings = "Missing")
+) %>%  
+  group_by(sel_method, missings) %>%
+    summarise(
+      mean_val = paste0(round(mean(test_mcc, na.rm = TRUE), 3), " ± ", round(sd(test_mcc, na.rm = TRUE), 3))
+    ) %>%
+  pivot_wider(names_from = sel_method, values_from = mean_val)
+```
+
+# Ranking Analysis
+
+## Feature Rankings
+
+Analyze the rankings obtained from different feature selection methods to identify the most consistently selected features.
+
+```{r}
+# Read feature rankings
+rankings <- read_rankings(params$experiment_name, params$output_dir)
+```
+
+```{r}
+# Select the top 10 features from the rankings
+best_features <- select_top_feat_from_ranking(rankings, 10)
+best_features
+```
+
+## Univariate vs. Multivariate Methods
+
+Compare the overlap between features selected by univariate and multivariate feature selection methods.
+
+```{r}
+# Calculate the number of common features selected by different methods
+lapply(2:ncol(best_features), function(i){
+  best_features %>% 
+  gather(sel_method, mean_score, -original_name, -names(best_features[i])) %>% 
+  filter(!is.na(!!rlang::sym(names(best_features[i])))) %>% 
+  filter(!is.na(mean_score)) %>% 
+  group_by(sel_method) %>% 
+  count() %>% 
+  spread(sel_method, n) %>% 
+    add_column(method = names(best_features[i]), .after = 1)
+}) %>% 
+  bind_rows() %>% 
+  pivot_longer(cols = -method, names_to = "other_method", values_to = "value") %>% 
+  filter(!is.na(value)) %>% 
+  group_by(method, other_method) %>% 
+  summarise(mean = mean(value)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = method, y = other_method, fill = mean)) +
+    geom_tile() +
+     scale_fill_gradient(low = "gray", high = "blue") +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 60, hjust = 1), 
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank()
+    )
+
+ggsave(
+  "no_of_commono_of_feat.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 15, 
+  height = 10, 
+  units = "in"
+)
+```
+# Multiple Omics Representation
+
+```{r}
+# Calculate the percentage of features per dataset
+best_features %>% 
+  gather(key, value, -original_name) %>% 
+  filter(!is.na(value)) %>% 
+  separate(original_name, c("name", "datatype"), sep = " ") %>% 
+  group_by(key, datatype) %>% 
+  count() %>% 
+  left_join(
+    best_features %>% 
+    gather(key, value, -original_name) %>% 
+    filter(!is.na(value)) %>% 
+    separate(original_name, c("name", "datatype"), sep = " ") %>% 
+    group_by(key) %>% 
+    count() %>% 
+    rename(all = n)
+  ) %>% 
+  mutate(`%` = 100*n/all) %>% 
+  ggplot(aes(x = datatype, y = key, fill = `%`)) +
+  geom_tile() +
+   scale_fill_gradient(low = "blue", high = "red") +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 60, hjust = 1), 
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank()
+    )
+
+ggsave(
+  "no_of_feat_per_dataset.png", 
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 15, 
+  height = 10, 
+  units = "in"
+)
+```
+
+## Simulation Time
+
+Evaluate the computational efficiency of different feature selection methods by analyzing the execution time recorded during the simulations.
+
+```{r}
+rankings %>% 
+  distinct(sel_method, sep_mode, iter_no, fold_no, time_s) %>% 
+  mutate(time_s = as.numeric(time_s)) %>% 
+  ggplot(aes(x = sep_mode, y = time_s, color = sep_mode)) +
+    geom_boxplot() +
+    facet_wrap(~sel_method, scales = "free", nrow = 1) +
+    labs(y = "Time [seconds]") +
+      theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 60, hjust = 1), 
+      axis.title.x = element_blank(),
+      legend.position = "bottom"
+    )
+
+ggsave(
+  "FS_czas_trwania.png",
+  path = file.path(params$output_dir, params$experiment_name), 
+  width = 25, 
+  height = 15, 
+  units = "in"
+)
+```
+
+```{r}
+# Summarize execution time for feature selection methods
+rankings %>% 
+  mutate(time_s = as.numeric(time_s)) %>% 
+  group_by(sel_method, sep_mode) %>% 
+   summarise(
+    `mean_time [s]`= round(mean(time_s, na.rm = TRUE), 3),
+    `sd_time [s]` = round(sd(time_s, na.rm = TRUE), 3),
+    `median_time [s]` = round(median(time_s, na.rm = TRUE), 3),
+    `min_time [s]` = round(min(time_s, na.rm = TRUE), 3),
+    `max_time [s]` = round(max(time_s, na.rm = TRUE), 3)
+  ) 
+```
 
