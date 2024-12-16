@@ -43,9 +43,9 @@ Once the container is running, RStudio Server can be accessed through your web b
 
 To verify the setup and functionality of the environment, you have two options in RStudio: running a test script through an R Markdown file or executing an analysis script. Follow the steps below for each method:
 
-**Running the Test Script:**
+**Running the Test Scripts:**
 
-1. Open the R Markdown file named `playOmics-example.Rmd`, located in the project directory.
+1. Open the R Markdown file named `playOmics-example.Rmd` or `playOmics-THCA-example.Rmd` located in the project directory.
 2. Run the script by knitting the document to ensure that the environment is correctly set up and functioning.
 
 **Executing the Analysis Script:**
@@ -55,7 +55,33 @@ To verify the setup and functionality of the environment, you have two options i
 
 These steps allow you to test the environment with an example workflow and execute a more comprehensive analysis, ensuring the playOmics setup meets your needs.
 
-### 5. Comparing playOmics with Other Algorithms
+### 5. Feature Selection Simulations
+
+The "Feature Selection Simulations" directory contains all the necessary components for running feature selection simulations within the playOmics environment. This includes scripts and functions for simulating and visualizing the performance of different feature selection strategies.
+
+To run the feature selection simulations, navigate to the feature selection simulations folder.
+You'll find three primary files:
+
+1. `FS_simulation_functions.R`: Contains the core functions for performing feature selection simulations.
+2. `FS_simulations.Rmd`: An R Markdown file where you can run the feature selection simulations. It provides a detailed workflow for running the simulations and generating results.
+3. `FS_simulations.html`: The resulting HTML file with visualized outcomes from the simulations.
+Run the simulations by opening and knitting the FS_simulations.Rmd file in RStudio. This document will walk you through various feature selection techniques, helping you choose the best methods for your analysis.
+
+6. Ensemble Learning
+
+The "Ensembling" directory is designed for performing ensemble learning, where multiple models' predictions are combined to maximize the overall prediction performance. Ensemble methods help reduce model variance and increase the accuracy of predictions by leveraging the strengths of different classifiers.
+
+To perform ensemble learning, follow these steps:
+
+1. Go to the ensembling folder in your project directory.
+2. There are two key files here:
+
+- `ensembling_helpers.R`: Contains helper functions for ensemble learning, such as methods for combining model predictions and calculating performance metrics.
+- `ensembling_notebook.Rmd`: The R Markdown file where the ensemble learning process is laid out. This notebook will guide you through the steps of combining model predictions, running stepwise metrics calculations, and evaluating performance.
+
+At the end of this ensemble learning pipeline, an ensemble model is created that selects a minimal set of models while maximizing prediction accuracy.
+
+### 7. Comparing playOmics with Other Algorithms
 
 To facilitate a comprehensive comparison of playOmics against other algorithms, with results that are showcased within our publication, a dedicated script is available. Follow the instructions below to access and utilize this comparison script:
 

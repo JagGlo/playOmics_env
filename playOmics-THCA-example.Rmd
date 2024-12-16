@@ -1,0 +1,529 @@
+---
+title: "playOmics"
+output: 
+  html_notebook:
+    toc: true
+---
+
+## Setting Up the Environment
+
+```{r setup}
+# load playOmics
+library(playOmics)
+```
+
+```{r}
+# Load the additional required libraries
+library(tidyverse)
+library(readxl)
+```
+
+
+```{r}
+here::set_here()
+my_experiment_name <- "thca_experiment"
+```
+
+## Preparing the Data
+
+```{r}
+THCA_data <- readRDS("exemplary_data/THCA_data.Rds")
+THCA_data$clinical$histological_type <- ifelse(THCA_data$clinical$histological_type == "classical/usual", "classical", THCA_data$clinical$histological_type)
+THCA_data %>% summary()
+```
+
+## Exploring and Refining the Data
+
+### Evaluating Data Availability
+
+```{r}
+plot_coverage(THCA_data)
+```
+
+### Complete cases
+
+```{r}
+data <- THCA_data
+ complete_cases <-
+    lapply(names(data), function(dataset) {
+      new_data <- as.data.frame(data[[dataset]] %>% filter(ID %in% data$clinical$ID))
+      new_data <- as.data.frame(new_data %>% filter(ID %in% data$proteome$ID))
+      new_data <- as.data.frame(new_data %>% filter(ID %in% c(data$mutation$ID)))
+      new_data <- as.data.frame(new_data %>% filter(ID %in% data$RNAseq$ID))
+      new_data <- as.data.frame(new_data %>% filter(ID %in% data$miRNA$ID))
+      new_data[,colSums(is.na(new_data))==0]
+    }) 
+ 
+ names(complete_cases) <- names(data)
+ 
+  # data_reduced <-
+  #   complete_cases %>%
+  #   reduce(full_join, by = c(my_target$id_variable)) %>% 
+  #   na.omit()
+ plot_coverage(complete_cases)
+```
+
+
+### Understanding Your Dataset
+
+```{r}
+data_summary(THCA_data)
+```
+
+## Classification
+
+
+
+### Define analysis target
+
+
+```{r}
+ my_target <-
+      playOmics::define_target(
+        phenotype_df_name = "clinical",
+        id_variable_name = "ID",
+        target_variable_name = "histological_type"
+      )
+
+my_target
+```
+
+### Dividing the Data: Train/Test Split
+
+```{r}
+splitted_data <- split_data_into_train_test(THCA_data, prop = 9 / 10, target = my_target)
+```
+
+```{r}
+exemplary_set <- splitted_data$test_data
+```
+
+
+```{r}
+modelling_set <- splitted_data$train_data
+rm(splitted_data)
+```
+
+
+```{r}
+THCA_data_splitted <-
+  split_data_into_train_test(modelling_set, prop = 8 / 10, target = my_target)
+```
+
+### Prepare dataset for modeling
+
+```{r warning=FALSE}
+data_prepared <-
+  prepare_data_for_modelling(data = THCA_data_splitted$train_data, target = my_target, remove_correlated_features = F)
+```
+
+```{r warning=FALSE}
+test_data_prepared <-
+  prepare_data_for_modelling(THCA_data_splitted$test_data, target = my_target, remove_correlated_features = F)
+rm(THCA_data_splitted)
+```
+
+### Selecting features
+
+```{r}
+data_filtered <-
+  rank_and_select_features(
+   data = data_prepared,
+   target = my_target, 
+   filter_name = "information_gain", 
+   cutoff_method = "top_n", 
+   cutoff_treshold = 5,
+   selection_type = "separate", 
+   return_ranking_list = TRUE, 
+   n_fold = 3,
+   n_threads = 10)
+
+#rm(data_prepared)
+
+# visualize_ranking(list(data_filtered$ranking_list))
+visualize_ranking(data_filtered$ranking_list)
+```
+
+
+### Modelling
+
+```{r}
+my_models <- 
+create_multiple_models(
+  experiment_name = my_experiment_name,
+  train_data = data_filtered$filtered_data,
+  test_data = test_data_prepared,
+  target = my_target,
+  n_min = 2,
+  n_max = 3,
+  trim_models = TRUE,
+  trim_metric = "train_mcc",
+  trim_threshold = 0.25,
+  # single model settings
+  validation_method = "cv",
+  add_weights = T,
+  n_prop = NULL,
+  # n_fold = 5,
+  n_repeats = 1,
+  log_experiment = T,
+  explain = T,
+  # configuration
+  n_cores = 3,
+  directory = here::here()
+)
+```
+
+### Understanding the Results
+
+```{r warning=FALSE}
+results <- read_model_data(
+  experiment_name = my_experiment_name,
+  directory = here::here()
+)
+```
+
+
+``` r
+results <- read_logged_data(
+  experiment_name = my_experiment_name,
+  file_type = "metrics",
+  directory = here::here()
+) %>% 
+  bind_rows()
+```
+
+```{r}
+results %>%
+  results_GUI(target = my_target)
+```
+
+# Ensemble
+
+```{r}
+results <- read_model_data(
+  experiment_name = my_experiment_name,
+  directory = here::here()
+)
+
+selected_models <-
+  results
+```
+
+
+```{r}
+predictions <- read_logged_predictions(
+  experiment_name = my_experiment_name,
+  prediction_type = "test",
+  directory = here::here()
+) %>% 
+  left_join(
+    results %>% 
+      transmute(dir = model_dir, model_name),
+    by = "dir"
+  ) %>% 
+  select(-dir)
+```
+
+```{r}
+my_target <-
+      playOmics::define_target(
+        phenotype_df_name = "clinical",
+        id_variable_name = "ID",
+        target_variable_name = "histological_type"
+      )
+my_target$target_levels <- levels(pull(predictions, !!sym(my_target$target_variable)))
+
+predicted_as_positive <- 
+          if(!is.null(my_target$positive_class)){
+            paste0(".pred_", my_target$positive_class)
+          } else {
+            paste0(".pred_", my_target$target_levels[1])
+          }
+
+pred_spread <- 
+  predictions %>% 
+  select(model_name, !!predicted_as_positive, ID) %>% 
+  spread(model_name, !!predicted_as_positive) %>% 
+  select(-ID) %>% 
+  mutate_all(as.numeric)
+```
+
+```{r}
+load(paste(here::here(), my_experiment_name, "train_data.RData", sep = "/"))
+load(paste(here::here(), my_experiment_name, "test_data.RData", sep = "/"))
+exemplary_set <- readRDS(paste(here::here(), my_experiment_name, "exemplary_set.RDS", sep = "/"))
+
+exemplary_set <- exemplary_dataset %>% 
+  prepare_data_for_modelling(target = my_target) %>% 
+   select(names(train_data))
+```
+
+# Stepwise metric calculation
+
+```{r}
+source("ensembling_helpers.R")
+```
+
+```{r}
+ensembling_results <-
+  lapply(seq(0,1,0.25), function(lambda){
+metrics_test_stepwise(selected_models, exemplary_dataset, pred_spread, "miss", "test_accuracy", lambda = lambda, vec_of_ensemble_size = c(1, 3, 5, 7, 9), voting = "soft", my_target)
+  })
+
+ensembling_results %>% 
+  show_plots()
+
+ggsave("ens_ex_plots.png", width = 3500, height = 1000, units = "px", dpi = 500)
+```
+
+
+```{r}
+ensembling_results %>% 
+   lapply(function(x){
+  x$predictions
+    }) %>% 
+   bind_rows() %>% 
+  select(n_ensemble, lambda, `TRUE`, `FALSE`, n_not_classified, adjusted_acc, accuracy) %>% 
+  filter(lambda == 0)
+```
+
+```{r}
+ensembling_results %>% 
+   lapply(function(x){
+  x$models
+    }) %>% 
+   bind_rows() %>% 
+  filter(lambda == 0)
+```
+
+## Single prediction
+
+Model 1:
+
+```{r}
+model_name <- "STAT3 [proteome] + hsa-mir-509-3 [miRNA] + CYP2S1 [RNAseq]" 
+predicted_values <- load_and_predict(results$model_dir[results$model_name == model_name], exemplary_dataset)
+predicted_values %>% 
+  bind_cols(exemplary_dataset %>% select(histological_type)) %>% 
+  summarise(
+    correctly_classified = sum(.pred_class == histological_type, na.rm = T),
+    incorrectly_classified = sum(.pred_class != histological_type, na.rm = T),
+    accuracy = correctly_classified / (correctly_classified + incorrectly_classified),
+    missing = sum(is.na(.pred_class))
+  ) %>%
+  arrange(desc(correctly_classified))
+```
+
+Model 2:
+
+```{r}
+model_name <- "CYP2S1 [RNAseq] + CEACAM6 [RNAseq]" 
+predicted_values <- load_and_predict(results$model_dir[results$model_name == model_name], exemplary_dataset)
+predicted_values %>% 
+  bind_cols(exemplary_dataset %>% select(histological_type)) %>% 
+  summarise(
+    correctly_classified = sum(.pred_class == histological_type, na.rm = T),
+    incorrectly_classified = sum(.pred_class != histological_type, na.rm = T),
+    accuracy = correctly_classified / (correctly_classified + incorrectly_classified),
+    missing = sum(is.na(.pred_class))
+  ) %>%
+  arrange(desc(correctly_classified))
+```
+
+Model 3:
+
+```{r}
+model_name <- "CASP7 [proteome] + hsa-mir-509-3 [miRNA] + hsa-mir-1179 [miRNA]" 
+predicted_values <- load_and_predict(results$model_dir[results$model_name == model_name], exemplary_dataset)
+predicted_values %>% 
+  bind_cols(exemplary_dataset %>% select(histological_type)) %>% 
+  summarise(
+    correctly_classified = sum(.pred_class == histological_type, na.rm = T),
+    incorrectly_classified = sum(.pred_class != histological_type, na.rm = T),
+    accuracy = correctly_classified / (correctly_classified + incorrectly_classified),
+    missing = sum(is.na(.pred_class))
+  ) %>%
+  arrange(desc(correctly_classified))
+```
+
+# XGBoost
+
+```{r}
+# Load necessary library
+library(tidymodels)
+
+# Prepare training and validation datasets by removing the 'ID' column
+# train_data <- train_data%>% select(-ID)
+# val_data <- test_data %>% select(names(train_data), -ID)
+# data_united <- bind_rows(train_data, val_data)
+
+  counts <- data_united %>%
+            group_by(!!rlang::sym(my_target$target_variable)) %>%
+            count() %>%
+            arrange(desc(n))
+          proportion <- floor(counts$n[1] / counts$n[2])
+          data_united <-
+            data_united %>%
+            mutate(
+              sample_weight = ifelse(!!rlang::sym(my_target$target_variable) == as.character(counts[[1]][2]), proportion, 1),
+              sample_weight = parsnip::importance_weights(sample_weight)
+            )
+
+# Create a 5-fold cross-validation object with stratification
+set.seed(12345)  # For reproducibility
+resamples <- vfold_cv(data_united, v = 5, strata = histological_type)
+
+# Define the preprocessing recipe
+preprocess_recipe <- recipe(histological_type ~ ., data = data_united) %>% 
+  step_normalize(all_predictors())
+
+# Define the XGBoost model with hyperparameters to tune
+xgb_spec <- boost_tree(
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  min_n = tune(),
+  sample_size = tune(),
+  trees= tune(),
+  mtry= tune()
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# xgb_grid <- grid_random(mtry(c(3, 5)),
+#                          trees(c(5, 50)),
+#                          min_n(range = c(1, 10)),
+#                          tree_depth(range = c(1, 5)),
+#                          learn_rate(range = c(0.01, 0.3)),
+#                          sample_size(range = c(1, 1)),
+#                          loss_reduction(range = c(0, 10)),
+#                          size = 100
+# )
+
+# xgb_results <-
+#  workflow() %>% 
+#   add_model(xgb_spec) %>% 
+#   add_recipe(preprocess_recipe) %>% 
+#   tune_grid(resamples = resamples,
+#             grid = xgb_grid)
+
+# Create a workflow set containing only the XGBoost model
+workflow_set_xgb <- workflow_set(
+  preproc = list(preprocess = preprocess_recipe),
+  models = list(XGB = xgb_spec),
+  case_weights = sample_weight
+)
+```
+
+
+```{r}
+# Define control settings for tuning with race_anova
+tuning_control <- finetune::control_race(
+  save_pred = TRUE,
+  parallel_over = "everything",
+  save_workflow = TRUE,
+  allow_par = TRUE  # Set to TRUE if parallel processing is desired and supported
+)
+
+# Define the performance metrics
+performance_metrics <- metric_set(accuracy, mcc, roc_auc)
+
+# Perform hyperparameter tuning using workflow_map
+tuning_results <- workflow_set_xgb %>%
+  workflow_map(
+    "tune_race_anova",
+    seed = 12345,
+    resamples = resamples,
+    metrics = performance_metrics,
+    grid = 20,
+    control = tuning_control
+  )
+
+# Extract the best hyperparameters based on MCC
+best_hyperparameters <- tuning_results %>%
+  extract_workflow_set_result("preprocess_XGB") %>%  # Adjust identifier if different
+  select_best(metric = "accuracy")
+
+# Finalize the workflow with the best hyperparameters and fit on the entire training data
+final_workflow <- tuning_results %>%
+  extract_workflow("preprocess_XGB") %>%
+  finalize_workflow(best_hyperparameters) %>%
+  fit(data = data_united)
+
+final_workflow
+```
+
+
+```{r}
+xgb_test_results <-
+  predict(final_workflow, new_data = exemplary_dataset) %>%
+  bind_cols(predict(final_workflow, new_data = exemplary_dataset, type = "prob")) %>%
+  bind_cols(exemplary_dataset %>% select(histological_type))
+
+xgb_test_results %>%
+  summarise(
+    correctly_classified = sum(.pred_class == histological_type, na.rm = T),
+    incorrectly_classified = sum(.pred_class != histological_type, na.rm = T),
+    accuracy = correctly_classified / (correctly_classified + incorrectly_classified),
+    missing = sum(is.na(.pred_class))
+  ) %>%
+  arrange(desc(correctly_classified))
+```
+
+## reducing number of trees
+
+```{r}
+
+
+xgb_grid <- grid_random(trees(c(1, 5)),
+                         min_n(),
+                         tree_depth(),
+                         learn_rate(),
+                        mtry(c(3, 5)),
+                         sample_size(range = c(0, 1)),
+                         loss_reduction(),
+                         size = 20
+)
+
+# Perform hyperparameter tuning using workflow_map
+tuning_results <- workflow_set_xgb %>%
+  workflow_map(
+    "tune_race_anova",
+    seed = 12345,
+    resamples = resamples,
+    metrics = performance_metrics,
+    grid = xgb_grid,
+    control = tuning_control
+  )
+
+# Extract the best hyperparameters based on MCC
+best_hyperparameters <- tuning_results %>%
+  extract_workflow_set_result("preprocess_XGB") %>%  # Adjust identifier if different
+  select_best(metric = "accuracy")
+
+# Finalize the workflow with the best hyperparameters and fit on the entire training data
+final_workflow <- tuning_results %>%
+  extract_workflow("preprocess_XGB") %>%
+  finalize_workflow(best_hyperparameters) %>%
+  fit(data = data_united)
+
+final_workflow
+```
+
+
+```{r}
+xgb_test_results <-
+  predict(final_workflow, new_data = exemplary_dataset) %>%
+  bind_cols(predict(final_workflow, new_data = exemplary_dataset, type = "prob")) %>%
+  bind_cols(exemplary_dataset %>% select(histological_type))
+
+xgb_test_results %>%
+  summarise(
+    correctly_classified = sum(.pred_class == histological_type, na.rm = T),
+    incorrectly_classified = sum(.pred_class != histological_type, na.rm = T),
+    accuracy = correctly_classified / (correctly_classified + incorrectly_classified),
+    missing = sum(is.na(.pred_class))
+  ) %>%
+  arrange(desc(correctly_classified))
+```
+
